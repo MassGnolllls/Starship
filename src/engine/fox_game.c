@@ -128,6 +128,7 @@ void Game_SetGameState(void) {
     } else {
         gFillScreenRed = gFillScreenGreen = gFillScreenBlue = 0;
         Audio_FadeOutAll(1);
+        SFModGame_OnSoundsFadedOut(); // @mod: brings the sounds back when the level is set up
     }
     gFillScreenAlpha = 255;
     gPlayerGlareAlphas[0] = 0;

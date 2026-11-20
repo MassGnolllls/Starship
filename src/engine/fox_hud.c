@@ -1,3 +1,4 @@
+#include "port/sfmod/SFModGame.h"
 #include "sf64math.h"
 #include "fox_hud.h"
 #include "prevent_bss_reordering.h"
@@ -4861,6 +4862,7 @@ void ActorTeamBoss_Update(ActorTeamBoss* this) {
     switch (this->work_048) {
         case 0:
             ActorTeamBoss_SetAction(this);
+            SFModGame_TeamBossHold(this); // @mod: the team keeps out of the way in boss fights
             ActorTeamBoss_SetFlyingAngle(this);
             ActorTeamBoss_SetFlyingSpeed(this);
             ActorTeamBoss_Shoot(this);

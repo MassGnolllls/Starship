@@ -230,6 +230,11 @@ void ControlsWindow::DrawElement() {
         DrawButtonAction("Brake", "Pull back while braking for a U-turn (All-Range Mode)", BTN_CDOWN);
         DrawButtonAction("Tilt left / barrel roll", "Hold to tilt, press twice quickly for a barrel roll", BTN_Z);
         DrawButtonAction("Tilt right / barrel roll", "Hold to tilt, press twice quickly for a barrel roll", BTN_R);
+        DrawButtonAction("Auto tilt (tighter turns)",
+                         "Hold while steering: the Arwing tilts to the side you steer to (like holding\n"
+                         "Tilt left / Tilt right), so it turns tighter. Not steering: no tilt.\n"
+                         "Does nothing while \"Hold L to Charge\" is switched on.",
+                         BTN_L);
         DrawButtonAction("Change view", "Cockpit view / behind the ship", BTN_CUP);
         DrawButtonAction("Answer radio", "Talk to ROB / answer incoming messages", BTN_CRIGHT);
         DrawButtonAction("Pause / skip cutscene", nullptr, BTN_START);

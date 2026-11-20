@@ -30,6 +30,7 @@ extern "C" {
 #define CVAR_SFMOD_BOOT_TO_MENU "gSFMod.BootToMainMenu"
 #define CVAR_SFMOD_SKIP_CUTSCENES "gSFMod.SkipCutscenes"
 #define CVAR_SFMOD_TANK_KEEPS_LASER "gSFMod.TankKeepsLaser"
+#define CVAR_SFMOD_TEAM_STAYS_BACK "gSFMod.TeamStaysBack"
 #define CVAR_SFMOD_FIRE_SWAPPED_PREFIX "gSFMod.FireButtonsSwapped.Port"
 
 void SFMod_Init(void);
@@ -40,6 +41,7 @@ void SFMod_ProcessInput(void);
 bool SFMod_BootToMenu(void);
 bool SFMod_SkipCutscenesEnabled(void);
 bool SFMod_TankKeepsLaser(void);
+bool SFMod_TeamStaysBack(void);
 bool SFMod_FireButtonsSwapped(int32_t port);
 
 // Cutscene fast-forward, driven by the frame loop in Game.cpp

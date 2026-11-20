@@ -195,6 +195,33 @@ int32_t SFModVs_ViewedPlayer(void) {
     return sViewed;
 }
 
+static s32 sSfxMuted = 0; // personal sounds of other pilots left out (debug statistics)
+
+bool SFModVs_HearsSfx(int32_t playerNum, uint32_t sfxId) {
+    if (!SFModVs_Active() || (playerNum == SFModVs_ViewedPlayer())) {
+        return true;
+    }
+    switch (sfxId) {
+        case NA_SE_DAMAGE_S:
+        case NA_SE_DAMAGE_L:
+        case NA_SE_SHIELD_WARNING0:
+        case NA_SE_SHIELD_WARNING1:
+        case NA_SE_SHIELD_BUZZER:
+        case NA_SE_LOCK_SEARCH:
+        case NA_SE_LOCK_ON:
+        case NA_SE_ONE_UP:
+        case NA_SE_BOMB_GET:
+        case NA_SE_TWIN_LASER_GET:
+        case NA_SE_SHIELD_RING:
+        case NA_SE_SHIELD_RING_M:
+        case NA_SE_GOLD_RING:
+            sSfxMuted++;
+            return false;
+        default:
+            return true;
+    }
+}
+
 bool SFModVs_IsHuman(int32_t playerNum) {
     return SFModVs_Active() && gSFVs.humanPlays && (playerNum == 0);
 }
@@ -802,7 +829,8 @@ static void SFModVs_DebugLog(void) {
     if ((gGameFrameCount % 150) != 0) {
         return;
     }
-    printf("[SFVS] frame %d time %d:", gGameFrameCount, sTimeLeft / 30);
+    printf("[SFVS] frame %d time %d (other pilots' personal sounds left out: %d):", gGameFrameCount, sTimeLeft / 30,
+           sSfxMuted);
     for (i = 0; i < gCamCount; i++) {
         printf(" %s(sh%d k%d d%d s%d h%d c%d H%d)", SFModVs_PilotName(i), gPlayer[i].shields, sKills[i], sDeaths[i],
                sShots[i], sHits[i], sCharged[i], sBigHits[i]);

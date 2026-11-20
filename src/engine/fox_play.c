@@ -726,7 +726,7 @@ void Play_SetupStarfield(void) {
 void Player_PlaySfx(f32* sfxSrc, u32 sfxId, s32 mode) {
     if (!gVersusMode) {
         AUDIO_PLAY_SFX(sfxId, sfxSrc, 0);
-    } else {
+    } else if (SFModVs_HearsSfx(mode, sfxId)) { // @mod: VS CPU mode: personal sounds of the watched pilot only
         AUDIO_PLAY_SFX(sfxId, sfxSrc, mode);
     }
 }
@@ -1017,7 +1017,7 @@ void Player_ApplyDamage(Player* player, s32 direction, s32 damage) {
         gShieldAlpha[player->num] = 2.0f;
         player->damage = 0;
     } else {
-        if (player->shields != 0) {
+        if ((player->shields != 0) && SFModVs_HearsSfx(player->num, NA_SE_SHIELD_WARNING0)) { // @mod
             if (player->shields < 50) {
                 AUDIO_PLAY_SFX(NA_SE_SHIELD_WARNING1, gDefaultSfxSource, 4);
             } else if (player->shields < 100) {
@@ -2652,6 +2652,7 @@ void Play_InitLevel(void) {
             gTeamLowHealthMsgTimer = -1;
             break;
     }
+    SFModGame_LevelAudioSetup(); // @mod: levels started by the mod (mission practice, gauntlet, red route)
 
     gUseDynaFloor = 0;
 

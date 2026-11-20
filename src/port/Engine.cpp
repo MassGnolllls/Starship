@@ -167,7 +167,8 @@ GameEngine::GameEngine() {
             { BTN_DLEFT, { SDL_CONTROLLER_BUTTON_DPAD_LEFT } },
             { BTN_DRIGHT, { SDL_CONTROLLER_BUTTON_DPAD_RIGHT } },
             { BTN_R, { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER } },
-            { BTN_Z, { SDL_CONTROLLER_BUTTON_LEFTSHOULDER } }
+            { BTN_Z, { SDL_CONTROLLER_BUTTON_LEFTSHOULDER } },
+            { BTN_L, { SDL_CONTROLLER_BUTTON_LEFTSTICK } } // @mod: auto tilt
         },
         // SDLButtonToAxisDirectionMappings - use built-in LUS defaults
         std::unordered_map<Ship::StickIndex, std::vector<std::pair<Ship::Direction, SDL_GameControllerButton>>>(),

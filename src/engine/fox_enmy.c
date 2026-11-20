@@ -1,4 +1,5 @@
 #include "global.h"
+#include "port/sfmod/SFModVs.h"
 #include "assets/ast_corneria.h"
 #include "assets/ast_sector_x.h"
 #include "assets/ast_sector_y.h"
@@ -85,7 +86,7 @@ void Object_PlayerSfx(f32* pos, u32 sfxId, s32 playerNum) {
     PRINTF("Enm->obj.pos.x  %f\n");
     if (!gVersusMode) {
         AUDIO_PLAY_SFX(sfxId, gDefaultSfxSource, 4);
-    } else {
+    } else if (SFModVs_HearsSfx(playerNum, sfxId)) { // @mod: VS CPU mode: personal sounds of the watched pilot only
         AUDIO_PLAY_SFX(sfxId, pos, playerNum);
     }
 }

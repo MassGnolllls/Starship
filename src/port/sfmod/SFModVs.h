@@ -60,6 +60,9 @@ extern SFVsConfig gSFVs;
 bool SFModVs_Active(void);
 int32_t SFModVs_ViewedPlayer(void);
 bool SFModVs_IsHuman(int32_t playerNum);
+// Personal sounds (being hit, shield warnings, lock-ons, item pickups) are only heard for the watched
+// pilot; false when this pilot's sound should stay silent
+bool SFModVs_HearsSfx(int32_t playerNum, uint32_t sfxId);
 bool SFModVs_SameTeam(int32_t a, int32_t b);
 void SFModVs_GetPlayerColor(int32_t playerNum, uint8_t* r, uint8_t* g, uint8_t* b);
 const char* SFModVs_CharacterName(int32_t character);

@@ -28,6 +28,10 @@ bool SFMod_TankKeepsLaser(void) {
     return CVarGetInteger(CVAR_SFMOD_TANK_KEEPS_LASER, 1) != 0;
 }
 
+bool SFMod_TeamStaysBack(void) {
+    return CVarGetInteger(CVAR_SFMOD_TEAM_STAYS_BACK, 1) != 0;
+}
+
 static void SFMod_FireSwapCVarName(char* buf, size_t size, s32 port) {
     snprintf(buf, size, "%s%d", CVAR_SFMOD_FIRE_SWAPPED_PREFIX, port + 1);
 }
@@ -168,27 +172,35 @@ static u16 sPrevRawHold[MAX_PLAYERS];
 static s32 sSwapMsgTimer = 0;
 static bool sSwapMsgSwapped = false;
 
-// Does this controller port currently fly a ship?
-static bool SFMod_PortControlsShip(s32 port) {
+// The ship this controller port currently flies, NULL when it flies none
+static Player* SFMod_PortShip(s32 port) {
     Player* player;
 
     if ((gGameState != GSTATE_PLAY) || (gPlayState != PLAY_UPDATE) || (gPlayer == NULL)) {
-        return false;
+        return NULL;
     }
 
     if (gVersusMode) {
         if (port >= gCamCount) {
-            return false;
+            return NULL;
         }
         player = &gPlayer[port];
     } else {
         if (port != gMainController) {
-            return false;
+            return NULL;
         }
         player = &gPlayer[0];
     }
 
-    return (player->state == PLAYERSTATE_ACTIVE) || (player->state == PLAYERSTATE_U_TURN);
+    if ((player->state == PLAYERSTATE_ACTIVE) || (player->state == PLAYERSTATE_U_TURN)) {
+        return player;
+    }
+    return NULL;
+}
+
+// Does this controller port currently fly a ship?
+static bool SFMod_PortControlsShip(s32 port) {
+    return SFMod_PortShip(port) != NULL;
 }
 
 static void SFMod_ProcessFireButtons(s32 port, u16 rawHold, u16 rawPress) {
@@ -246,6 +258,79 @@ static void SFMod_ProcessFireButtons(s32 port, u16 rawHold, u16 rawPress) {
     }
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Auto tilt (L button)
+ *
+ * While L is held, the Arwing tilts toward the side it is steered to, exactly as if Z (left) or
+ * R (right) were held: tilted, it turns tighter. Without steering it stays level, and without L
+ * everything is as usual. The game only sees held Z / R buttons; the first frame of a tilt also
+ * gets a single "press" for the game's tilt sound, which is then taken back from the barrel roll
+ * check so it never counts as the first tap of a barrel roll. Real Z / R presses always win.
+ * --------------------------------------------------------------------------------------------- */
+
+#define SFMOD_AUTOTILT_START 10 // stick (after the game's dead zone, up to 60) that starts a tilt
+#define SFMOD_AUTOTILT_STOP 4   // ... and below which it ends again
+
+static s8 sAutoTiltSide[4];   // -1 left (Z), 1 right (R), 0 level
+static u16 sAutoTiltAdded[4]; // buttons the auto tilt added to last frame's hold
+static u16 sAutoTiltTapped[4]; // the button it "pressed" last frame (tilt sound)
+
+static void SFMod_ProcessAutoTilt(s32 port, u16 rawHold, u16 rawPress) {
+    OSContPad* hold = &gControllerHold[port];
+    OSContPad* press = &gControllerPress[port];
+    Player* player = SFMod_PortShip(port);
+    s32 stickX = press->stick_x; // what the game steers with (dead zone applied)
+    s32 side = sAutoTiltSide[port];
+
+    // The game computes presses against last frame's hold, which had the added tilt button in it:
+    // a real press of that button would get lost.
+    press->button |= rawPress & sAutoTiltAdded[port];
+    sAutoTiltAdded[port] = 0;
+
+    // last frame's tilt sound press is no first tap of a barrel roll
+    if (player != NULL) {
+        if (sAutoTiltTapped[port] & Z_TRIG) {
+            player->rollInputTimerL = 0;
+        }
+        if (sAutoTiltTapped[port] & R_TRIG) {
+            player->rollInputTimerR = 0;
+        }
+    }
+    sAutoTiltTapped[port] = 0;
+
+    if ((player == NULL) || (player->form != FORM_ARWING) || !(rawHold & L_TRIG) || (rawHold & (Z_TRIG | R_TRIG)) ||
+        (CVarGetInteger("gLtoCharge", 0) == 1)) {
+        // not flying an Arwing, L not held, or tilting by hand (L is the charge button with "Hold L to Charge")
+        sAutoTiltSide[port] = 0;
+        return;
+    }
+
+    if (((side < 0) && (stickX > -SFMOD_AUTOTILT_STOP)) || ((side > 0) && (stickX < SFMOD_AUTOTILT_STOP))) {
+        side = 0;
+    }
+    if (side == 0) {
+        if (stickX <= -SFMOD_AUTOTILT_START) {
+            side = -1;
+        } else if (stickX >= SFMOD_AUTOTILT_START) {
+            side = 1;
+        }
+        // a new tilt: one press for the tilt sound, but never while a real tap could make it a barrel roll
+        if ((side < 0) && (player->rollState == 0) && (player->rollInputTimerL == 0)) {
+            press->button |= Z_TRIG;
+            sAutoTiltTapped[port] = Z_TRIG;
+        } else if ((side > 0) && (player->rollState == 0) && (player->rollInputTimerR == 0)) {
+            press->button |= R_TRIG;
+            sAutoTiltTapped[port] = R_TRIG;
+        }
+    }
+    sAutoTiltSide[port] = side;
+
+    if (side != 0) {
+        sAutoTiltAdded[port] = (side < 0) ? Z_TRIG : R_TRIG;
+        hold->button |= sAutoTiltAdded[port];
+    }
+}
+
 void SFMod_ProcessInput(void) {
     s32 i;
 
@@ -295,6 +380,10 @@ void SFMod_ProcessInput(void) {
             gControllerPress[i].button = (gControllerPress[i].button & ~A_BUTTON) | (rawPress & A_BUTTON);
             sTurboPhase[i] = 0;
         }
+
+        if (i < 4) { // the CPU pilots of the VS CPU mode steer themselves
+            SFMod_ProcessAutoTilt(i, rawHold, rawPress);
+        }
     }
 
     if (sSwapMsgTimer > 0) {
@@ -333,6 +422,7 @@ static void SFMod_TestUpdate(void);
 
 static bool sDebug = false;
 static s32 sDebugShots = 0;
+static s32 sDebugRolls = 0;
 static s32 sDebugFrames = 0;
 static s32 sDebugFastFrames = 0;
 static s32 sDebugLast[6] = { -1, -1, -1, -1, -1, -1 };
@@ -376,12 +466,24 @@ static void SFMod_OnGameUpdatePost(IEvent* event) {
         fflush(stdout);
     }
 
+    // barrel rolls of player 1 (auto tilt must never cause one)
+    if ((gGameState == GSTATE_PLAY) && (gPlayer != NULL)) {
+        static s32 sPrevRollState = 0;
+        if ((gPlayer[0].rollState != 0) && (sPrevRollState == 0)) {
+            sDebugRolls++;
+        }
+        sPrevRollState = gPlayer[0].rollState;
+    }
+
     sDebugFrames++;
     if ((sDebugFrames % 30) == 0) {
-        printf("[SFMod] second %d: shots=%d fastForwardFrames=%d\n", sDebugFrames / 30, sDebugShots, sDebugFastFrames);
+        printf("[SFMod] second %d: shots=%d fastForwardFrames=%d rolls=%d bank=%.0f tilt=%d\n", sDebugFrames / 30,
+               sDebugShots, sDebugFastFrames, sDebugRolls,
+               ((gGameState == GSTATE_PLAY) && (gPlayer != NULL)) ? gPlayer[0].zRotBank : 0.0f, sAutoTiltSide[0]);
         fflush(stdout);
         sDebugShots = 0;
         sDebugFastFrames = 0;
+        sDebugRolls = 0;
     }
 }
 

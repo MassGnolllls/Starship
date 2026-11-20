@@ -942,6 +942,12 @@ void DrawModMenu() {
                        "Nothing is lost: the game plays the scene in fast forward in the background.",
             .defaultValue = true
         });
+        UIWidgets::CVarCheckbox("Team stays back in boss fights", CVAR_SFMOD_TEAM_STAYS_BACK, {
+            .tooltip = "In boss fights Falco, Slippy and Peppy keep out of the way instead of flying\n"
+                       "around the boss (and into you or your line of fire). Not in missions where the\n"
+                       "team fights along (Fortuna, Katina, Bolse, Sector Z, Venom).",
+            .defaultValue = true
+        });
         UIWidgets::CVarCheckbox("Landmaster uses the laser upgrade", CVAR_SFMOD_TANK_KEEPS_LASER, {
             .tooltip = "In Landmaster missions the tank fires twin/hyper shots with the laser level\n"
                        "your Arwing had (the laser level is kept as long as you don't lose a life).",

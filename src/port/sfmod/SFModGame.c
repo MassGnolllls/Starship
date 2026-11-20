@@ -542,6 +542,50 @@ void SFModGame_Update(void) {
                gLifeCount[0], gPlayer[0].state);
         fflush(stdout);
     }
+    if (sStoryAIDebug) {
+        // the team in boss fights: how close does it get to Fox?
+        static f32 sTeamMinDist = 1e9f;
+        static f32 sTeamBossDist = 1e9f;
+        static s32 sTeamSeen = 0;
+        f32 d;
+
+        for (i = 0; i < 6; i++) {
+            Actor* a = &gActors[i];
+            if ((a->obj.status == OBJ_ACTIVE) && (a->obj.id == OBJ_ACTOR_TEAM_BOSS)) {
+                d = sqrtf(SQ(a->obj.pos.x - gPlayer[0].pos.x) + SQ(a->obj.pos.y - gPlayer[0].pos.y) +
+                          SQ(a->obj.pos.z - gPlayer[0].trueZpos));
+                sTeamMinDist = MIN(sTeamMinDist, d);
+                if (gBosses[0].obj.status == OBJ_ACTIVE) {
+                    d = sqrtf(SQ(a->obj.pos.x - gBosses[0].obj.pos.x) + SQ(a->obj.pos.z - gBosses[0].obj.pos.z));
+                    sTeamBossDist = MIN(sTeamBossDist, d);
+                }
+                sTeamSeen++;
+            }
+        }
+        if (((gGameFrameCount % 60) == 0) && (sTeamSeen > 0)) {
+            printf("[SFGame] team boss: closest to Fox %.0f, closest to the boss %.0f, Fox to the boss %.0f\n",
+                   sTeamMinDist, sTeamBossDist,
+                   (gBosses[0].obj.status == OBJ_ACTIVE)
+                       ? sqrtf(SQ(gBosses[0].obj.pos.x - gPlayer[0].pos.x) + SQ(gBosses[0].obj.pos.z - gPlayer[0].trueZpos))
+                       : -1.0f);
+            for (i = 0; i < 6; i++) {
+                Actor* a = &gActors[i];
+                if ((a->obj.status == OBJ_ACTIVE) && (a->obj.id == OBJ_ACTOR_TEAM_BOSS)) {
+                    printf("    team %d: pos %.0f %.0f %.0f target %.0f %.0f %.0f state %d w48 %d cam-rel %.0f %.0f %.0f\n",
+                           a->aiType, a->obj.pos.x, a->obj.pos.y, a->obj.pos.z, a->fwork[4], a->fwork[5], a->fwork[6],
+                           a->state, a->work_048, a->obj.pos.x - gPlayCamEye.x, a->obj.pos.y - gPlayCamEye.y,
+                           a->obj.pos.z + gPathProgress - gPlayCamEye.z);
+                }
+            }
+            printf("    boss %.0f %.0f %.0f fox %.0f %.0f %.0f cam %.0f %.0f %.0f at %.0f %.0f %.0f path %.0f\n",
+                   gBosses[0].obj.pos.x, gBosses[0].obj.pos.y, gBosses[0].obj.pos.z, gPlayer[0].pos.x,
+                   gPlayer[0].pos.y, gPlayer[0].trueZpos, gPlayCamEye.x, gPlayCamEye.y, gPlayCamEye.z, gPlayCamAt.x,
+                   gPlayCamAt.y, gPlayCamAt.z, gPathProgress);
+            fflush(stdout);
+            sTeamMinDist = sTeamBossDist = 1e9f;
+            sTeamSeen = 0;
+        }
+    }
     for (i = 0; i < SFGAME_ACTORS; i++) {
         Actor* a = &gActors[i];
 
@@ -558,6 +602,63 @@ void SFModGame_Update(void) {
         } else if (a->obj.id == OBJ_ACTOR_ALLRANGE) {
             SFModGame_UpdatePowerUps(i);
         }
+    }
+}
+
+// Boss fights: Falco, Slippy and Peppy only fly around the boss there (they hardly hurt it), and they
+// get rammed or fly into Fox's line of fire. With the setting on they keep out of the way: on rails
+// out of sight behind Fox, in All-Range Mode on a wide circle far from the fight. They still talk on
+// the radio and join Fox again when the boss is beaten.
+void SFModGame_TeamBossHold(void* actorPtr) {
+    Actor* a = (Actor*) actorPtr;
+    Player* pl = &gPlayer[0];
+    f32 side;
+
+    if (!SFMod_TeamStaysBack() || gVersusMode || ((a->state != 0) && (a->state != 1)) ||
+        (pl->state == PLAYERSTATE_LEVEL_COMPLETE)) {
+        return; // 2: flies along at the end, 3: retreats, 7: Slippy's scene on Titania
+    }
+    switch (gCurrentLevel) {
+        case LEVEL_FORTUNA:
+        case LEVEL_KATINA:
+        case LEVEL_BOLSE:
+        case LEVEL_SECTOR_Z:
+        case LEVEL_VENOM_2:
+        case LEVEL_TITANIA:
+        case LEVEL_VENOM_ANDROSS:
+        case LEVEL_TRAINING:
+            return; // missions where the team fights along or has its own scenes
+        default:
+            break;
+    }
+    side = (a->aiType - 2) * 700.0f; // Falco left, Slippy in the middle, Peppy right
+    a->iwork[0] = 0;                 // no shooting
+    if (gLevelMode == LEVELMODE_ON_RAILS) {
+        a->obj.pos.x = pl->pos.x + side;
+        a->obj.pos.y = pl->pos.y + 500.0f;
+        a->obj.pos.z = pl->trueZpos + 3000.0f;
+        a->vel.x = a->vel.y = a->vel.z = 0.0f;
+        a->fwork[4] = a->obj.pos.x;
+        a->fwork[5] = a->obj.pos.y;
+        a->fwork[6] = a->obj.pos.z - 2000.0f; // keep looking ahead
+    } else {
+        // circle high above the fight, far around the boss: always a bit ahead on the own side of the
+        // circle, so nobody crosses the fight on the way out (the circle stays inside the area the
+        // team may fly in, see ActorTeamBoss_Update, Corneria's 8000 being the smallest)
+        f32 cx = 0.0f;
+        f32 cy = 0.0f;
+        f32 cz = 0.0f;
+        f32 angle;
+
+        if (gBosses[0].obj.status == OBJ_ACTIVE) {
+            cx = CLAMP(gBosses[0].obj.pos.x, -2000.0f, 2000.0f);
+            cy = gBosses[0].obj.pos.y;
+            cz = CLAMP(gBosses[0].obj.pos.z, -2000.0f, 2000.0f);
+        }
+        angle = Math_Atan2F(a->obj.pos.x - cx, a->obj.pos.z - cz) + 25.0f * M_DTOR;
+        a->fwork[4] = cx + sinf(angle) * 5500.0f;
+        a->fwork[5] = ((gLevelType == LEVELTYPE_PLANET) ? gGroundHeight : cy) + 2500.0f;
+        a->fwork[6] = cz + cosf(angle) * 5500.0f;
     }
 }
 
@@ -795,6 +896,41 @@ static void SFModGame_SaveMissionResult(void) {
         }
     }
     gSavedGoldRingCount[0] = gGoldRingCount[0];
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Sound when a level starts through Game_SetGameState (mission practice, gauntlet, red route)
+ *
+ * The map sets the audio of a level (sound banks, music) before it starts the level itself.
+ * Levels the mod starts go through Game_SetGameState instead, which fades every sequence player
+ * (music, sound effects, voices) out. The original game only does that on its way into the Venom
+ * levels, whose new audio spec (Play_InitLevel) brings the sound back. So: the level's audio spec
+ * when the level is set up, and the volumes back in any case (the same spec brings nothing back).
+ * --------------------------------------------------------------------------------------------- */
+
+// fox_map.c: the audio spec of a level (the map sets it right before a level starts)
+extern void Map_LevelStart_AudioSpecSetup(LevelId level);
+// audio_general.c: music volume of the sound options
+extern void Audio_RestoreVolumeSettings(u8 audioType);
+
+static bool sLevelAudioPending = false;
+
+void SFModGame_OnSoundsFadedOut(void) {
+    sLevelAudioPending = (gGameState == GSTATE_PLAY) && !gVersusMode;
+}
+
+void SFModGame_LevelAudioSetup(void) {
+    if (!sLevelAudioPending) {
+        return;
+    }
+    sLevelAudioPending = false;
+    // nothing for Venom, Andross and the training: Play_InitLevel sets theirs
+    Map_LevelStart_AudioSpecSetup(gCurrentLevel);
+    SEQCMD_SET_SEQPLAYER_VOLUME(SEQ_PLAYER_SFX, 0, 127);
+    SEQCMD_SET_SEQPLAYER_VOLUME(SEQ_PLAYER_VOICE, 0, 127);
+    Audio_RestoreVolumeSettings(AUDIO_TYPE_MUSIC);
+    printf("[SFGame] level %d: audio set up\n", gCurrentLevel);
+    fflush(stdout);
 }
 
 void SFModGame_OnNextGameState(void) {

@@ -82,8 +82,13 @@ uint16_t SFModGame_ScaleBossDamage(uint16_t damage);
 uint16_t SFModGame_ScaleActorDamage(void* actor, int32_t sourceId, uint16_t damage);
 void SFModGame_OnEnemyLaser(int32_t objId, float xPos, float yPos, float zPos, float speed);
 void SFModGame_Update(void); // once per game frame while playing
+// Game_SetGameState faded all sounds out / Play_InitLevel: the sounds of a level the mod started
+void SFModGame_OnSoundsFadedOut(void);
+void SFModGame_LevelAudioSetup(void);
 void SFModGame_AdjustAllRange(void* actor, float* fireChance, uint8_t* fireMask, float* fireRange);
 bool SFModGame_ActorHasTwinLaser(void* actor);
+// boss fights: the team stays out of the way (OBJ_ACTOR_TEAM_BOSS, after its action was chosen)
+void SFModGame_TeamBossHold(void* actor);
 // new AI for a chasing all-range actor: true when it flies this actor (fire 0/1, move SFAIActorMove)
 bool SFModGame_StoryAI(void* actor, bool fighting, int32_t* fire, int32_t* move);
 
