@@ -1634,7 +1634,10 @@ void Cutscene_KillPlayer(Player* player) {
         }
     } else {
         if (player->attacker > 0) {
-            gVsKills[player->attacker - 1][gVsPoints[player->attacker - 1]] = player->num;
+            // @mod: the VS CPU mode allows more than 10 kills
+            if (gVsPoints[player->attacker - 1] < ARRAY_COUNT(gVsKills[0])) {
+                gVsKills[player->attacker - 1][gVsPoints[player->attacker - 1]] = player->num;
+            }
             gVsPoints[player->attacker - 1]++;
             if (gVsPointsToWin == gVsPoints[player->attacker - 1]) {
                 player->attacker = -1;
@@ -1729,7 +1732,7 @@ void Cutscene_ArwingDown360(Player* player) {
     } else if (((player->radioDamageTimer > 0) || (player->pos.y < player->pathFloor) ||
                 (player->pos.y < gWaterLevel) || (player->csEventTimer == 0)) &&
                (player->csTimer == 0)) {
-        if (gCamCount != 4) {
+        if (!gVersusMode) { // @mod: was gCamCount != 4
             if (player->unk_284 == 0) {
                 Effect_Effect387_Spawn(player->pos.x, player->pos.y, player->trueZpos - (2.0f * player->vel.z), 3.0f,
                                        80);

@@ -1,4 +1,5 @@
 #include "port/sfmod/SFMod.h"
+#include "port/sfmod/SFModVs.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
 #include "fox_map.h"
@@ -2260,9 +2261,10 @@ void Player_CollisionCheck(Player* player) {
 
     Player_CheckItemCollect(player);
 
-    if (gCamCount == 4) {
-        for (opponent = &gPlayer[3], i = 3; i >= 0; i--, opponent--) {
-            if ((i != gPlayerNum) && (opponent->state == PLAYERSTATE_ACTIVE)) {
+    // @mod: any number of VS players, teammates fly through each other
+    if (gVersusMode) {
+        for (opponent = &gPlayer[gCamCount - 1], i = gCamCount - 1; i >= 0; i--, opponent--) {
+            if ((i != gPlayerNum) && (opponent->state == PLAYERSTATE_ACTIVE) && !SFModVs_SameTeam(i, gPlayerNum)) {
                 spC8.x = 25.0f;
                 if (player->form == FORM_ON_FOOT) {
                     spC8.x = 4.0f;
@@ -2796,7 +2798,7 @@ void Player_ResetVsData(void) {
 
     gVsMatchState = VS_STATE_0;
 
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < MAX_PLAYERS; i++) { // @mod: was 4
         gVsPoints[i] = 0;
         for (j = 0; j < 10; j++) {
             gVsKills[i][j] = 0;
@@ -2811,7 +2813,7 @@ void Player_InitVersus(void) {
     s32 i;
 
     Player_ResetVsData();
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < gCamCount; i++) { // @mod: was 4
         gPlayerNum = i;
         Player_Initialize(&gPlayer[i]);
         Player_Setup(&gPlayer[i]);
@@ -2929,7 +2931,7 @@ void Play_Init(void) {
     gCamCount = 1;
 
     if (gCurrentLevel == LEVEL_VERSUS) {
-        gCamCount = 4;
+        gCamCount = SFModVs_Active() ? gSFVs.numPilots : 4; // @mod: VS CPU mode has 2-10 pilots
     }
 
     for (i = TEAM_ID_FALCO; i < TEAM_ID_MAX; i++) {
@@ -3151,8 +3153,8 @@ void Player_TankCannon(Player* player) {
     s32 i;
 
     CALL_CANCELLABLE_EVENT(PlayerActionPreShootEvent, player, gLaserStrength[gPlayerNum]) {
-        for (i = 0; i < ARRAY_COUNT(gPlayerShots) - 1; i++) {
-            if (gPlayerShots[i].obj.status == SHOT_FREE) {
+        for (i = 0; i < ARRAY_COUNT(gPlayerShots); i++) {
+            if ((gPlayerShots[i].obj.status == SHOT_FREE) && (i != PLAYERSHOT_BOMB_SLOT)) { // @mod
                 Player_SetupTankShot(player, &gPlayerShots[i], PLAYERSHOT_TANK, 100.0f);
                 Player_PlaySfx(player->sfxSource, NA_SE_TANK_SHOT, player->num);
                 player->unk_1A0 = 2;
@@ -3177,8 +3179,8 @@ void Player_ArwingLaser(Player* player) {
 
     switch (laser) {
         case LASERS_SINGLE:
-            for (i = 0; i < ARRAY_COUNT(gPlayerShots) - 1; i++) {
-                if (gPlayerShots[i].obj.status == SHOT_FREE) {
+            for (i = 0; i < ARRAY_COUNT(gPlayerShots); i++) {
+                if ((gPlayerShots[i].obj.status == SHOT_FREE) && (i != PLAYERSHOT_BOMB_SLOT)) { // @mod
                     Player_SetupArwingShot(player, &gPlayerShots[i], 0.0f, 0.0f, PLAYERSHOT_SINGLE_LASER,
                                            400.0f / 3.0f);
                     Player_PlaySfx(player->sfxSource, NA_SE_ARWING_SHOT, player->num);
@@ -3190,8 +3192,8 @@ void Player_ArwingLaser(Player* player) {
             break;
         case LASERS_TWIN:
         case LASERS_HYPER:
-            for (i = 0; i < ARRAY_COUNT(gPlayerShots) - 1; i++) {
-                if (gPlayerShots[i].obj.status == SHOT_FREE) {
+            for (i = 0; i < ARRAY_COUNT(gPlayerShots); i++) {
+                if ((gPlayerShots[i].obj.status == SHOT_FREE) && (i != PLAYERSHOT_BOMB_SLOT)) { // @mod
                     Player_SetupArwingShot(player, &gPlayerShots[i], 0.0f, -10.0f, PLAYERSHOT_TWIN_LASER,
                                            400.0f / 3.0f);
                     if (laser == LASERS_TWIN) {
@@ -3212,7 +3214,7 @@ void Player_ArwingLaser(Player* player) {
 void Player_SmartBomb(Player* player) {
 
     if ((gBombCount[player->num] != 0) && (gBombButton[player->num] & gInputPress->button) &&
-        (gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].obj.status == SHOT_FREE)) {
+        (gPlayerShots[PLAYERSHOT_BOMB_SLOT].obj.status == SHOT_FREE)) {
         CALL_CANCELLABLE_RETURN_EVENT(PlayerActionPreBombEvent, player);
 
         if (gVersusMode) {
@@ -3222,18 +3224,18 @@ void Player_SmartBomb(Player* player) {
         }
 
         if (player->form == FORM_ARWING) {
-            Player_SetupArwingShot(player, &gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1], 0.0f, 0.0f, PLAYERSHOT_BOMB,
+            Player_SetupArwingShot(player, &gPlayerShots[PLAYERSHOT_BOMB_SLOT], 0.0f, 0.0f, PLAYERSHOT_BOMB,
                                    180.0f);
         } else if (player->form == FORM_LANDMASTER) {
-            Player_SetupTankShot(player, &gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1], PLAYERSHOT_BOMB, 180.0f);
+            Player_SetupTankShot(player, &gPlayerShots[PLAYERSHOT_BOMB_SLOT], PLAYERSHOT_BOMB, 180.0f);
         } else {
-            Player_SetupOnFootShot(player, &gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1], PLAYERSHOT_BOMB);
+            Player_SetupOnFootShot(player, &gPlayerShots[PLAYERSHOT_BOMB_SLOT], PLAYERSHOT_BOMB);
         }
 
-        gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].unk_48 = 30.0f;
-        gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].unk_60 = 0;
+        gPlayerShots[PLAYERSHOT_BOMB_SLOT].unk_48 = 30.0f;
+        gPlayerShots[PLAYERSHOT_BOMB_SLOT].unk_60 = 0;
         Audio_InitBombSfx(player->num, 1);
-        Audio_PlayBombFlightSfx(player->num, gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].sfxSource);
+        Audio_PlayBombFlightSfx(player->num, gPlayerShots[PLAYERSHOT_BOMB_SLOT].sfxSource);
         CALL_EVENT(PlayerActionPostBombEvent, player);
     }
 }
@@ -3374,16 +3376,16 @@ bool Player_UpdateLockOn(Player* player) {
     if (gInputPress->button & (CVarGetInteger("gLtoCharge", 0) == 1 ? L_TRIG : A_BUTTON)) {
         for (i = 0; i < ARRAY_COUNT(gActors); i++) {
             if ((gActors[i].obj.status == OBJ_ACTIVE) && (gActors[i].lockOnTimers[player->num] != 0)) {
-                if ((gPlayerShots[14 - player->num].obj.status == SHOT_FREE) ||
-                    (gPlayerShots[14 - player->num].obj.id != PLAYERSHOT_LOCK_ON) ||
-                    ((gPlayerShots[14 - player->num].obj.id == PLAYERSHOT_LOCK_ON) &&
-                     (gPlayerShots[14 - player->num].unk_60 != 0))) {
+                if ((gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].obj.status == SHOT_FREE) ||
+                    (gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].obj.id != PLAYERSHOT_LOCK_ON) ||
+                    ((gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].obj.id == PLAYERSHOT_LOCK_ON) &&
+                     (gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].unk_60 != 0))) {
                     CALL_CANCELLABLE_EVENT(PlayerActionPreShootChargedEvent, player) {
                         if (player->form == FORM_ARWING) {
-                            Player_SetupArwingShot(player, &gPlayerShots[14 - player->num], 0.0f, 0.0f,
+                            Player_SetupArwingShot(player, &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)], 0.0f, 0.0f,
                                                    PLAYERSHOT_LOCK_ON, 70.0f);
                         } else {
-                            Player_SetupTankShot(player, &gPlayerShots[14 - player->num], PLAYERSHOT_LOCK_ON, 70.0f);
+                            Player_SetupTankShot(player, &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)], PLAYERSHOT_LOCK_ON, 70.0f);
                         }
                         Object_PlayerSfx(player->sfxSource, NA_SE_LOCK_ON_LASER, player->num);
                         gControllerRumbleTimers[player->num] = 5;
@@ -3396,16 +3398,16 @@ bool Player_UpdateLockOn(Player* player) {
         }
 
         if (gChargeTimers[player->num] > 10) {
-            if ((gPlayerShots[14 - player->num].obj.status == SHOT_FREE) ||
-                (gPlayerShots[14 - player->num].obj.id != PLAYERSHOT_LOCK_ON) ||
-                ((gPlayerShots[14 - player->num].obj.id == PLAYERSHOT_LOCK_ON) &&
-                 (gPlayerShots[14 - player->num].scale > 1.0f))) {
+            if ((gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].obj.status == SHOT_FREE) ||
+                (gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].obj.id != PLAYERSHOT_LOCK_ON) ||
+                ((gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].obj.id == PLAYERSHOT_LOCK_ON) &&
+                 (gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)].scale > 1.0f))) {
                 CALL_CANCELLABLE_EVENT(PlayerActionPreShootChargedEvent, player) {
                     if (player->form == FORM_ARWING) {
-                        Player_SetupArwingShot(player, &gPlayerShots[14 - player->num], 0.0f, 0.0f, PLAYERSHOT_LOCK_ON,
+                        Player_SetupArwingShot(player, &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)], 0.0f, 0.0f, PLAYERSHOT_LOCK_ON,
                                                70.0f);
                     } else {
-                        Player_SetupTankShot(player, &gPlayerShots[14 - player->num], PLAYERSHOT_LOCK_ON, 70.0f);
+                        Player_SetupTankShot(player, &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(player->num)], PLAYERSHOT_LOCK_ON, 70.0f);
                     }
                     Object_PlayerSfx(player->sfxSource, NA_SE_LOCK_ON_LASER, player->num);
                     gChargeTimers[player->num] = 0;
@@ -3434,20 +3436,20 @@ bool Player_UpdateLockOn(Player* player) {
             }
         }
         if (hasBombTarget && (gBombCount[player->num] != 0) &&
-            (gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].obj.status == SHOT_FREE)) {
+            (gPlayerShots[PLAYERSHOT_BOMB_SLOT].obj.status == SHOT_FREE)) {
             CALL_CANCELLABLE_EVENT(PlayerActionPreBombEvent, player) {
                 gBombCount[player->num]--;
                 if (player->form == FORM_ARWING) {
-                    Player_SetupArwingShot(player, &gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1], 0.0f, 0.0f,
+                    Player_SetupArwingShot(player, &gPlayerShots[PLAYERSHOT_BOMB_SLOT], 0.0f, 0.0f,
                                            PLAYERSHOT_LOCK_ON, 60.0f);
                 } else {
-                    Player_SetupTankShot(player, &gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1], PLAYERSHOT_LOCK_ON,
+                    Player_SetupTankShot(player, &gPlayerShots[PLAYERSHOT_BOMB_SLOT], PLAYERSHOT_LOCK_ON,
                                          60.0f);
                 }
-                gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].unk_48 = 30.0f;
-                gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].unk_60 = 0;
+                gPlayerShots[PLAYERSHOT_BOMB_SLOT].unk_48 = 30.0f;
+                gPlayerShots[PLAYERSHOT_BOMB_SLOT].unk_60 = 0;
                 Audio_InitBombSfx(player->num, 1);
-                Audio_PlayBombFlightSfx(player->num, gPlayerShots[ARRAY_COUNT(gPlayerShots) - 1].sfxSource);
+                Audio_PlayBombFlightSfx(player->num, gPlayerShots[PLAYERSHOT_BOMB_SLOT].sfxSource);
                 return true;
             }
             CALL_EVENT(PlayerActionPostBombEvent, player);
@@ -3715,8 +3717,7 @@ void Player_CheckBounds360(Player* player) {
             player->cam.at.z += 24000.0f;
         }
         if (var_v0) {
-            gVsLockOnTimers[player->num][0] = gVsLockOnTimers[player->num][1] = gVsLockOnTimers[player->num][2] =
-                gVsLockOnTimers[player->num][3] = 0;
+            SFMOD_CLEAR_LOCKONS_ON(player->num); // @mod: all MAX_PLAYERS lockers
         }
     } else {
         var_fv1 = 12500.0f;
@@ -3905,8 +3906,7 @@ void Player_PerformLoop(Player* player) {
     Vec3f sp40;
 
     if (gVersusMode) {
-        gVsLockOnTimers[player->num][0] = gVsLockOnTimers[player->num][1] = gVsLockOnTimers[player->num][2] =
-            gVsLockOnTimers[player->num][3] = 0;
+        SFMOD_CLEAR_LOCKONS_ON(player->num); // @mod: all MAX_PLAYERS lockers
     }
 
     if (player->aerobaticPitch > 240.0f) {
@@ -4556,13 +4556,14 @@ void Player_MoveOnFoot(Player* player) {
     player->trueZpos = player->pos.z;
 }
 
-f32 D_800D3114[4] = { 10000.0f, -10000.0f, 10000.0f, -10000.0f };
-f32 D_800D3124[4] = { 10000.0f, -10000.0f, -10000.0f, 10000.0f };
+// @mod: spawn points for players 5-10 (VS CPU mode), all facing the middle of the arena
+f32 D_800D3114[MAX_PLAYERS] = { 10000.0f, -10000.0f, 10000.0f, -10000.0f, 0.0f, 0.0f, 10000.0f, -10000.0f, 2296.1f, -2296.1f };
+f32 D_800D3124[MAX_PLAYERS] = { 10000.0f, -10000.0f, -10000.0f, 10000.0f, 10000.0f, -10000.0f, 0.0f, 0.0f, 5543.3f, -5543.3f };
 f32 D_800D3134[8] = {
     // unused? possibly two f32[4]?
     500.0f, -500.0f, 500.0f, -500.0f, 500.0f, -500.0f, -500.0f, 500.0f,
 };
-f32 D_800D3154[4] = { 45.0f, -135.0f, 135.0f, -45.0f };
+f32 D_800D3154[MAX_PLAYERS] = { 45.0f, -135.0f, 135.0f, -45.0f, 0.0f, 180.0f, 90.0f, -90.0f, 22.5f, -157.5f };
 
 void Player_Setup(Player* playerx) {
     s32 j;
@@ -4597,9 +4598,8 @@ void Player_Setup(Player* playerx) {
         gRightWingHealth[gPlayerNum] = 60;
     }
     gUturnDownTimers[gPlayerNum] = gUturnBrakeTimers[gPlayerNum] = gLoopDownTimers[gPlayerNum] =
-        gLoopBoostTimers[gPlayerNum] = gShieldTimer[gPlayerNum] = gHasShield[gPlayerNum] = gChargeTimers[gPlayerNum] =
-            gVsLockOnTimers[gPlayerNum][0] = gVsLockOnTimers[gPlayerNum][1] = gVsLockOnTimers[gPlayerNum][2] =
-                gVsLockOnTimers[gPlayerNum][3] = 0;
+        gLoopBoostTimers[gPlayerNum] = gShieldTimer[gPlayerNum] = gHasShield[gPlayerNum] = gChargeTimers[gPlayerNum] = 0;
+    SFMOD_CLEAR_LOCKONS_ON(gPlayerNum); // @mod: all MAX_PLAYERS lockers
     gRightWingFlashTimer[gPlayerNum] = gLeftWingFlashTimer[gPlayerNum] = gRightWingDebrisTimer[gPlayerNum] =
         gLeftWingDebrisTimer[gPlayerNum] = D_ctx_80177990[gPlayerNum] = D_ctx_801779A8[gPlayerNum] =
             gMuzzleFlashScale[gPlayerNum] = 0.0f;
@@ -5109,8 +5109,7 @@ void Player_UpdateTankRoll(Player* player) {
         }
 
         if (gVersusMode) {
-            gVsLockOnTimers[player->num][0] = gVsLockOnTimers[player->num][1] = gVsLockOnTimers[player->num][2] =
-                gVsLockOnTimers[player->num][3] = 0;
+            SFMOD_CLEAR_LOCKONS_ON(player->num); // @mod: all MAX_PLAYERS lockers
         }
     }
 }
@@ -5980,7 +5979,7 @@ void Player_Update(Player* player) {
                     } else if (gVsMatchStart) {
                         if (gPlayerInactive[player->num] == true) {
                             do {
-                                sp1C4 = RAND_INT(3.9f);
+                                sp1C4 = RAND_INT(gCamCount - 0.1f); // @mod: was 3.9f
                             } while (gPlayerInactive[sp1C4]);
                             player->attacker = sp1C4 + 1;
                             player->state = PLAYERSTATE_VS_STANDBY;
@@ -5989,7 +5988,7 @@ void Player_Update(Player* player) {
                         } else {
                             if (gVsMatchStart == true) {
                                 gVsMatchStart++;
-                                for (i = 0; i < 4; i++) {
+                                for (i = 0; i < gCamCount; i++) { // @mod: was 4
                                     Player_PlaySfx(gPlayer[i].sfxSource, NA_SE_ARWING_BOOST, gPlayer[i].num);
                                     gPlayer[i].unk_190 = gPlayer[i].unk_194 = 5.0f;
                                 }
@@ -6018,8 +6017,7 @@ void Player_Update(Player* player) {
 
         case PLAYERSTATE_U_TURN:
             if (gVersusMode) {
-                gVsLockOnTimers[player->num][0] = gVsLockOnTimers[player->num][1] = gVsLockOnTimers[player->num][2] =
-                    gVsLockOnTimers[player->num][3] = 0;
+                SFMOD_CLEAR_LOCKONS_ON(player->num); // @mod: all MAX_PLAYERS lockers
             }
             player->arwing.drawFace = true;
 
@@ -6117,7 +6115,7 @@ void Player_Update(Player* player) {
                 Math_SmoothStepToF(&player->cam.eye.z, player->trueZpos + gPathProgress + 500.0f, 0.05f, 20.0f, 0.0f);
             }
             if (player->csTimer == 0) {
-                if (gCamCount == 4) {
+                if (gVersusMode) { // @mod: was gCamCount == 4
                     player->state = PLAYERSTATE_VS_STANDBY;
                     player->csTimer = 200;
                 } else {
@@ -6337,7 +6335,7 @@ void Camera_FollowPlayer(Player* player, s32 playerNum, bool arg2) {
 
     if (((gGameFrameCount & mask) == (gPlayerNum * 32)) || arg2) {
         for (i = 0; i < 100; i++) {
-            playerNum = RAND_INT(3.9f);
+            playerNum = RAND_INT(gCamCount - 0.1f); // @mod: was 3.9f
             if ((gPlayer[playerNum].state != PLAYERSTATE_VS_STANDBY) && !gPlayerInactive[playerNum]) {
                 break;
             }
@@ -6835,14 +6833,30 @@ void Play_UpdateLevel(void) {
         case LEVEL_VERSUS:
             func_versus_800C26C8();
             gVsItemSpawnTimer++;
-            if ((gVsItemSpawnTimer == 200) && (gLaserStrength[0] == LASERS_SINGLE) &&
-                (gLaserStrength[1] == LASERS_SINGLE) && (gLaserStrength[2] == LASERS_SINGLE) &&
-                (gLaserStrength[3] == LASERS_SINGLE)) {
-                Play_SpawnVsItem(OBJ_ITEM_LASERS, &gItems[0]);
+            // @mod: any number of VS players
+            if (gVsItemSpawnTimer == 200) {
+                s32 n;
+
+                for (n = 0; n < gCamCount; n++) {
+                    if (gLaserStrength[n] != LASERS_SINGLE) {
+                        break;
+                    }
+                }
+                if (n == gCamCount) {
+                    Play_SpawnVsItem(OBJ_ITEM_LASERS, &gItems[0]);
+                }
             }
-            if ((gVsItemSpawnTimer == 400) && (gBombCount[0] == 0) && (gBombCount[1] == 0) && (gBombCount[2] == 0) &&
-                (gBombCount[3] == 0)) {
-                Play_SpawnVsItem(OBJ_ITEM_BOMB, &gItems[1]);
+            if (gVsItemSpawnTimer == 400) {
+                s32 n;
+
+                for (n = 0; n < gCamCount; n++) {
+                    if (gBombCount[n] != 0) {
+                        break;
+                    }
+                }
+                if (n == gCamCount) {
+                    Play_SpawnVsItem(OBJ_ITEM_BOMB, &gItems[1]);
+                }
             }
             if (gVsItemSpawnTimer == 500) {
                 gVsItemSpawnTimer = 0;
@@ -7193,7 +7207,11 @@ void Play_Main(void) {
             }
 
             if (gVersusMode) {
-                Versus_Main();
+                if (SFModVs_Active()) { // @mod: VS CPU mode runs its own match
+                    SFModVs_Update();
+                } else {
+                    Versus_Main();
+                }
             }
 
             if ((gControllerPress[gMainController].button & START_BUTTON) && gPauseEnabled) {
@@ -7215,7 +7233,8 @@ void Play_Main(void) {
                     }
                 }
             } else {
-                for (i = 0; i < 4; i++) {
+                SFModVs_PauseUpdate(); // @mod
+                for (i = 0; i < gCamCount; i++) { // @mod: was 4
                     if ((gControllerPress[i].button & R_TRIG) && (gPlayer[i].form != FORM_ON_FOOT)) {
                         if (gShowReticles[i] = 1 - gShowReticles[i]) {
                             Object_PlayerSfx(gPlayer[i].sfxSource, NA_SE_MAP_WINDOW_OPEN, i);

@@ -1,7 +1,7 @@
 #include "sys.h"
 
-OSContPad gControllerHold[4];
-OSContPad gControllerPress[4];
+OSContPad gControllerHold[MAX_PLAYERS]; // @mod: entries 4+ are filled by the CPU pilots
+OSContPad gControllerPress[MAX_PLAYERS];
 u8 gControllerPlugged[4];
 u32 gControllerLock;
 u8 gControllerRumbleEnabled[4];

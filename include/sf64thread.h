@@ -1,5 +1,6 @@
 #ifndef SF64_THREAD
 #define SF64_THREAD
+#include "sfmod_config.h"
 
 #include <libultraship.h>
 #include "gfx.h"
@@ -99,8 +100,8 @@ typedef enum {
     /* 16 */ SI_CONT_READ_DONE,
 } SerialMesg;
 
-extern OSContPad gControllerHold[4];
-extern OSContPad gControllerPress[4];
+extern OSContPad gControllerHold[MAX_PLAYERS];
+extern OSContPad gControllerPress[MAX_PLAYERS];
 extern u8 gControllerPlugged[4];
 extern u32 gControllerLock;
 extern u8 gControllerRumbleEnabled[4];
@@ -175,7 +176,7 @@ extern u8 gVIsPerFrame;
 extern u32 gSysFrameCount;
 extern u8 gStartNMI;
 extern u8 gStopTasks;
-extern u8 gControllerRumbleFlags[4];
+extern u8 gControllerRumbleFlags[MAX_PLAYERS];
 extern u16 gFillScreenColor;
 extern u16 gFillScreen;
 

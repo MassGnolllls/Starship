@@ -1,4 +1,5 @@
 #include "port/sfmod/SFMod.h"
+#include "port/sfmod/SFModVs.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
 #include "sf64dma.h"
@@ -10,7 +11,7 @@
 
 f32 gNextVsViewScale;
 f32 gVsViewScale;
-s32 gPlayerInactive[4];
+s32 gPlayerInactive[MAX_PLAYERS];
 s32 gVsMenuSelection;
 u8 gShowHud;
 u16 gNextLevelPhase;
@@ -24,7 +25,7 @@ f32 gFovY;
 f32 gProjectNear;
 f32 gProjectFar;
 
-bool gShowReticles[4] = { true, true, true, true };
+bool gShowReticles[MAX_PLAYERS] = { true, true, true, true, true, true, true, true, true, true };
 bool D_game_800D2870 = false;
 s32 sVsCameraULx[] = { 0, SCREEN_WIDTH / 2, 0, SCREEN_WIDTH / 2 };
 s32 sVsCameraLRx[] = { SCREEN_WIDTH / 2 - 1, SCREEN_WIDTH - 1, SCREEN_WIDTH / 2 - 1, SCREEN_WIDTH - 1 };
@@ -365,7 +366,8 @@ void Game_Update(void) {
 
     if (Game_ChangeScene() != true) {
         Lib_InitPerspective(&gUnkDisp1);
-        Game_InitViewport(&gUnkDisp1, gCamCount, 0);
+        // @mod: the VS CPU mode shows one pilot full screen
+        Game_InitViewport(&gUnkDisp1, SFModVs_Active() ? 1 : gCamCount, 0);
 
         if (gNextGameStateTimer != 0) {
             gNextGameStateTimer--;
@@ -442,7 +444,7 @@ void Game_Update(void) {
                 CVarSetFloat("gMainMusicVolume", gSaveFile.save.data.musicVolume / 100.0f);
                 CVarSetFloat("gVoiceVolume", gSaveFile.save.data.voiceVolume / 100.0f);
                 CVarSetFloat("gSFXMusicVolume", gSaveFile.save.data.sfxVolume / 100.0f);
-                for (i = 0; i < 4; i++) {
+                for (i = 0; i < MAX_PLAYERS; i++) { // @mod: was 4
                     gBoostButton[i] = L_CBUTTONS;
                     gBrakeButton[i] = D_CBUTTONS;
                     gShootButton[i] = A_BUTTON;
@@ -524,9 +526,15 @@ void Game_Update(void) {
                 break;
         }
 
-        Game_Draw(0);
+        if (SFModVs_Active()) { // @mod: one full screen view of the human or the watched pilot
+            Game_Draw(SFModVs_ViewedPlayer());
+        } else {
+            Game_Draw(0);
+        }
 
-        if (gCamCount == 2) {
+        if (SFModVs_Active()) {
+            // only one view
+        } else if (gCamCount == 2) {
             Game_InitViewport(&gMasterDisp, gCamCount, 1);
             Game_Draw(1);
             gDPPipeSync(gMasterDisp++);
@@ -568,7 +576,14 @@ void Game_Update(void) {
 
         partialFill = false;
 
-        if (gCamCount == 1) {
+        if (SFModVs_Active()) { // @mod: glare of the viewed pilot over the whole screen
+            s32 viewed = SFModVs_ViewedPlayer();
+
+            Graphics_FillRectangle(&gMasterDisp, OTRGetRectDimensionFromLeftEdge(0), 0,
+                                   OTRGetRectDimensionFromRightEdge(SCREEN_WIDTH - 1), SCREEN_HEIGHT - 1,
+                                   gPlayerGlareReds[viewed], gPlayerGlareGreens[viewed], gPlayerGlareBlues[viewed],
+                                   gPlayerGlareAlphas[viewed]);
+        } else if (gCamCount == 1) {
             Graphics_FillRectangle(&gMasterDisp, OTRGetRectDimensionFromLeftEdge(0), 0,
                                    OTRGetRectDimensionFromRightEdge(SCREEN_WIDTH - 1), SCREEN_HEIGHT - 1,
                                    gPlayerGlareReds[0], gPlayerGlareGreens[0], gPlayerGlareBlues[0],
@@ -606,7 +621,11 @@ void Game_Update(void) {
         AllRange_DrawCountdown();
 
         if ((gGameState == GSTATE_PLAY) && gVersusMode) {
-            Versus_Draw();
+            if (SFModVs_Active()) { // @mod
+                SFModVs_Draw();
+            } else {
+                Versus_Draw();
+            }
         }
 
         Wipe_Draw(WIPE_CIRCULAR, gCircleWipeFrame);

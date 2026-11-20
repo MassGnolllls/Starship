@@ -1211,7 +1211,7 @@ void Aquas_BlueMarineTorpedo(Player* player) {
     s32 i;
     PlayerShot* shot;
 
-    for (i = 15, shot = &gPlayerShots[15]; i < ARRAY_COUNT(gPlayerShots); i++, shot++) {
+    for (i = 15, shot = &gPlayerShots[15]; i < PLAYERSHOT_BOMB_SLOT + 1; i++, shot++) { // @mod: array grew
         if (shot->obj.status == SHOT_FREE) {
             CALL_CANCELLABLE_RETURN_EVENT(PlayerActionPreBombEvent, player);
             Player_SetupArwingShot(player, shot, 0.0f, 0.0f, PLAYERSHOT_LOCK_ON, 50.0f);

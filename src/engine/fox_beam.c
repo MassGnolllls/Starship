@@ -1,3 +1,4 @@
+#include "port/sfmod/SFModVs.h"
 #include "port/sfmod/SFMod.h"
 #include "global.h"
 #include "assets/ast_landmaster.h"
@@ -838,7 +839,7 @@ void PlayerShot_CollisionCheck(PlayerShot* shot) {
         if (gLevelMode == LEVELMODE_ALL_RANGE) {
             for (i = 0, player = gPlayer; i < gCamCount; i++, player++) {
                 test.x = 50.0f;
-                if (gVersusMode && (shot->sourceId < 4) &&
+                if (gVersusMode && (shot->sourceId < MAX_PLAYERS) && // @mod: was < 4
                     ((gLaserStrength[shot->sourceId] != LASERS_SINGLE) || (shot->obj.id == PLAYERSHOT_LOCK_ON))) {
                     test.x = 100.0f;
                 }
@@ -854,7 +855,7 @@ void PlayerShot_CollisionCheck(PlayerShot* shot) {
                     test.y = test.x;
                 }
                 test.z = test.x;
-                if ((i != shot->sourceId) &&
+                if ((i != shot->sourceId) && !SFModVs_SameTeam(i, shot->sourceId) && // @mod: no friendly fire
                     ((player->state == PLAYERSTATE_ACTIVE) || (player->state == PLAYERSTATE_DOWN)) &&
                     (fabsf(player->trueZpos - shot->obj.pos.z) < test.z) &&
                     (fabsf(player->pos.x - shot->obj.pos.x) < test.x) &&
@@ -1105,7 +1106,7 @@ void PlayerShot_DrawLaser(PlayerShot* shot) {
     Gfx* dList;
 
     dList = D_101AED0;
-    if (gCamCount < 4) {
+    if (!gVersusMode) { // @mod: was gCamCount < 4
         RCP_SetupDL_21();
         twinLaserSeparation = 9.0f;
         if ((shot->unk_58 == 0) || ((gCurrentLevel == LEVEL_METEO) && (gPlayer[0].state == PLAYERSTATE_LEVEL_INTRO))) {
@@ -1200,7 +1201,12 @@ void PlayerShot_DrawLaser(PlayerShot* shot) {
         }
     } else {
         RCP_SetupDL_64();
-        switch (shot->sourceId) {
+        if (SFModVs_Active()) { // @mod: pilot/team colors of the VS CPU mode
+            u8 r, g, b;
+
+            SFModVs_GetPlayerColor(shot->sourceId, &r, &g, &b);
+            gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, r, g, b, 255);
+        } else switch (shot->sourceId) {
             case 0:
                 gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, 255, 255, 32, 255);
                 break;
@@ -1231,9 +1237,10 @@ void PlayerShot_DrawLaser(PlayerShot* shot) {
 }
 
 f32 D_800C9BD8[10] = { 100.0f, 100.0f, 0.0f, 0.0f, 0.0f, 50.0f, 0.0f, 40.0f, 30.0f, 100.0f };
-u8 D_800C9C00[4] = { 255, 255, 32, 32 };
-u8 D_800C9C04[4] = { 255, 32, 255, 32 };
-u8 D_800C9C08[4] = { 32, 32, 32, 255 };
+// @mod: entries for players 5-10
+u8 D_800C9C00[MAX_PLAYERS] = { 255, 255, 32, 32, 255, 255, 48, 240, 176, 255 };
+u8 D_800C9C04[MAX_PLAYERS] = { 255, 32, 255, 32, 144, 64, 240, 240, 112, 176 };
+u8 D_800C9C08[MAX_PLAYERS] = { 32, 32, 32, 255, 0, 255, 255, 240, 255, 208 };
 void PlayerShot_DrawShot(PlayerShot* shot) {
     Vec3f sp11C = { 0.0f, 0.0f, 0.0f };
     s32 pad[4];
@@ -1678,7 +1685,7 @@ void PlayerShot_UpdateBeam(PlayerShot* shot, s32 index) {
         if (gCurrentLevel == LEVEL_BOLSE) {
             Effect_SpawnTimedSfxAtPos(&shot->obj.pos, NA_SE_EN_REFLECT);
         }
-        if ((gCamCount != 4) && (gCurrentLevel != LEVEL_AQUAS)) {
+        if (!gVersusMode && (gCurrentLevel != LEVEL_AQUAS)) { // @mod: was gCamCount != 4
             if ((shot->sourceId == TEAM_ID_FOX) && (gLaserStrength[0] != LASERS_SINGLE) &&
                 (gPlayer[0].form != FORM_LANDMASTER)) {
                 Matrix_RotateY(gCalcMatrix, shot->obj.rot.y * M_DTOR, MTXF_NEW);
@@ -1786,12 +1793,12 @@ bool PlayerShot_FindLockTarget(PlayerShot* shot) {
     if (gVersusMode) {
         for (i = 0, player = gPlayer; i < gCamCount; i++, player++) {
             if ((player->state == PLAYERSTATE_ACTIVE) && !player->somersault && (player->form != FORM_ON_FOOT) &&
-                (i != shot->sourceId) && (gVsLockOnTimers[i][shot->sourceId] == 0) &&
+                (i != shot->sourceId) && !SFModVs_SameTeam(i, shot->sourceId) && // @mod: no friendly lock-ons
+                (gVsLockOnTimers[i][shot->sourceId] == 0) &&
                 (fabsf(shot->obj.pos.x - player->pos.x) <= lockRange) &&
                 (fabsf(shot->obj.pos.y - player->pos.y) <= lockRange) &&
                 (fabsf(shot->obj.pos.z - player->trueZpos) <= lockRange)) {
-                gVsLockOnTimers[0][shot->sourceId] = gVsLockOnTimers[1][shot->sourceId] =
-                    gVsLockOnTimers[2][shot->sourceId] = gVsLockOnTimers[3][shot->sourceId] = 0;
+                SFMOD_CLEAR_LOCKONS_BY(shot->sourceId); // @mod: all MAX_PLAYERS targets
                 gVsLockOnTimers[i][shot->sourceId] = 20;
                 Object_PlayerSfx(gPlayer[shot->sourceId].sfxSource, NA_SE_LOCK_ON, shot->sourceId);
                 for (j = 0; j < ARRAY_COUNT(gPlayerShots); j++) {
@@ -1887,15 +1894,23 @@ void PlayerShot_CheckBossHitbox(PlayerShot* shot) {
 }
 
 void PlayerShot_SetBombLight(PlayerShot* shot) {
-    static u8 sPlayerReds[4] = { 255, 255, 32, 32 };
-    static u8 sPlayerGreens[4] = { 255, 32, 255, 32 };
-    static u8 sPlayerBlues[4] = { 32, 32, 32, 255 };
+    // @mod: entries for players 5-10
+    static u8 sPlayerReds[MAX_PLAYERS] = { 255, 255, 32, 32, 255, 255, 48, 240, 176, 255 };
+    static u8 sPlayerGreens[MAX_PLAYERS] = { 255, 32, 255, 32, 144, 64, 240, 240, 112, 176 };
+    static u8 sPlayerBlues[MAX_PLAYERS] = { 32, 32, 32, 255, 0, 255, 255, 240, 255, 208 };
     f32 brightness;
 
     gLight3x = shot->obj.pos.x;
     gLight3y = shot->obj.pos.y;
     gLight3z = shot->obj.pos.z;
-    if (gVersusMode) {
+    if (SFModVs_Active()) { // @mod: pilot/team colors of the VS CPU mode
+        u8 r, g, b;
+
+        SFModVs_GetPlayerColor(shot->sourceId, &r, &g, &b);
+        gLight3R = r;
+        gLight3G = g;
+        gLight3B = b;
+    } else if (gVersusMode) {
         gLight3R = sPlayerReds[shot->sourceId];
         gLight3G = sPlayerGreens[shot->sourceId];
         gLight3B = sPlayerBlues[shot->sourceId];
@@ -2049,7 +2064,8 @@ void PlayerShot_ApplyExplosionDamage(PlayerShot* shot, s32 damage) {
     if (gVersusMode) {
         player = gPlayer;
         for (i = 0; i < gCamCount; i++, player++) {
-            if ((i != shot->sourceId) && (player->state == PLAYERSTATE_ACTIVE) && (player->hitTimer == 0)) {
+            if ((i != shot->sourceId) && !SFModVs_SameTeam(i, shot->sourceId) && // @mod: no friendly fire
+                (player->state == PLAYERSTATE_ACTIVE) && (player->hitTimer == 0)) {
                 dx = player->pos.x - shot->obj.pos.x;
                 dy = player->pos.y - shot->obj.pos.y;
                 dz = player->trueZpos - shot->obj.pos.z;

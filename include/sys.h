@@ -1,5 +1,6 @@
 #ifndef SYS_H
 #define SYS_H
+#include "sfmod_config.h"
 
 #include "PR/xstdio.h"
 #include "PR/controller.h"
@@ -45,7 +46,7 @@ extern bool D_game_800D2870;
 
 extern f32 gNextVsViewScale;
 extern f32 gVsViewScale;
-extern s32 gPlayerInactive[4];
+extern s32 gPlayerInactive[MAX_PLAYERS];
 extern s32 gVsMenuSelection;
 extern u8 gShowHud;
 extern u16 gNextLevelPhase;

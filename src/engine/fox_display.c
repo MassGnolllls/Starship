@@ -1,3 +1,4 @@
+#include "port/sfmod/SFModVs.h"
 #include "global.h"
 #include "mods/hit64.c"
 #include "assets/ast_arwing.h"
@@ -12,18 +13,18 @@
 // f32 path1 = 0.0f;
 // f32 path2 = 0.0f;
 
-Vec3f D_display_801613B0[4];
+Vec3f D_display_801613B0[MAX_PLAYERS];
 Vec3f D_display_801613E0[4];
 s16 gReflectY;
-Matrix D_display_80161418[4];
-Vec3f D_display_80161518[4];
-Vec3f D_display_80161548[4];
-Vec3f gLockOnTargetViewPos[4];
-f32 D_display_801615A8[4];
-f32 D_display_801615B8[4];
+Matrix D_display_80161418[MAX_PLAYERS];
+Vec3f D_display_80161518[MAX_PLAYERS];
+Vec3f D_display_80161548[MAX_PLAYERS];
+Vec3f gLockOnTargetViewPos[MAX_PLAYERS];
+f32 D_display_801615A8[MAX_PLAYERS];
+f32 D_display_801615B8[MAX_PLAYERS];
 
 s32 D_display_800CA220 = 0;
-u8 sPlayersVisible[] = { false, false, false, false };
+u8 sPlayersVisible[MAX_PLAYERS] = { false }; // @mod: was 4 entries
 bool sDrawCockpit = false;
 s32 D_display_800CA22C = false;
 f32 gCamDistortion = 0.0f;
@@ -375,7 +376,7 @@ Gfx* sExpertFaceDL[] = { aAwJamesHeadDL, aAwFalcoHeadDL, aAwSlippyHeadDL, aAwPep
 f32 D_display_800CA28C = 2.0f;
 f32 D_display_800CA290 = 13.0f;
 f32 D_display_800CA294 = -10.0f;
-f32 sReticleScales[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+f32 sReticleScales[MAX_PLAYERS] = { 0.0f }; // @mod: was 4 entries
 f32 sPlayerShadowing = 0.0f;
 
 void Display_LandmasterMuzzleFlash(Player* player) {
@@ -1081,7 +1082,12 @@ void Display_ArwingLaserCharge(Player* player) {
         RCP_SetupDL(&gMasterDisp, SETUPDL_49);
         gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, 255, 255, 255, 128);
 
-        if (gVersusMode) {
+        if (SFModVs_Active()) { // @mod: pilot/team colors of the VS CPU mode
+            u8 r, g, b;
+
+            SFModVs_GetPlayerColor(player->num, &r, &g, &b);
+            gDPSetEnvColor(gMasterDisp++, r, g, b, 128);
+        } else if (gVersusMode) {
             switch (player->num) {
                 case 0:
                     gDPSetEnvColor(gMasterDisp++, 255, 255, 32, 128);
@@ -1235,7 +1241,12 @@ void Display_LandmasterLaserCharge(Player* player) {
         RCP_SetupDL(&gMasterDisp, SETUPDL_49);
         gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, 255, 255, 255, 128);
 
-        if (gVersusMode) {
+        if (SFModVs_Active()) { // @mod: pilot/team colors of the VS CPU mode
+            u8 r, g, b;
+
+            SFModVs_GetPlayerColor(player->num, &r, &g, &b);
+            gDPSetEnvColor(gMasterDisp++, r, g, b, 128);
+        } else if (gVersusMode) {
             switch (player->num) {
                 case 0:
                     gDPSetEnvColor(gMasterDisp++, 255, 255, 32, 128);
@@ -2083,7 +2094,10 @@ void Display_Update(void) {
 
     Background_DrawLensFlare();
 
-    if ((gCamCount != 1) && ((camPlayer->state == PLAYERSTATE_ACTIVE) || (camPlayer->state == PLAYERSTATE_U_TURN))) {
+    if (SFModVs_Active()) { // @mod: the VS CPU mode draws its own HUD
+        SFModVs_DrawHud();
+    } else if ((gCamCount != 1) &&
+               ((camPlayer->state == PLAYERSTATE_ACTIVE) || (camPlayer->state == PLAYERSTATE_U_TURN))) {
         HUD_Draw();
         HUD_EdgeArrows_Update();
     }

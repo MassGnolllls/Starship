@@ -4,6 +4,7 @@
 #include "audiothread_cmd.h"
 #include "audioseq_cmd.h"
 #include "port/Engine.h"
+#include "port/sfmod/SFModVs.h"
 
 void Audio_SetModulationAndPlaySfx(f32* sfxSource, u32 sfxId, f32 freqMod);
 s32 Audio_GetCurrentVoice(void);
@@ -58,11 +59,11 @@ ActiveSequence sActiveSequences[SEQ_PLAYER_MAX];
 u16 sDelayedSeqCmdFlags;
 DelayedSeqCmd sDelayedSeqCmds[16];
 SfxChannelState sSfxChannelState[16];
-PlayerNoiseModulation sPlayerNoise[4];
-f32 sBombFreqMod[4];
-u8 sBombType[4];
-u8 sBombState[4];
-s32 sBombStartFrame[4];
+PlayerNoiseModulation sPlayerNoise[MAX_PLAYERS]; // @mod: was 4 (VS CPU mode)
+f32 sBombFreqMod[MAX_PLAYERS]; // @mod: was 4
+u8 sBombType[MAX_PLAYERS];
+u8 sBombState[MAX_PLAYERS]; // @mod: was 4
+s32 sBombStartFrame[MAX_PLAYERS];
 
 u8 sChannelsPerBank[5][5] = {
     { 3, 2, 2, 2, 2 }, { 3, 1, 2, 2, 2 }, { 3, 2, 2, 2, 3 }, { 6, 0, 2, 0, 4 }, { 0, 0, 0, 0, 0 },
@@ -453,7 +454,8 @@ s8 Audio_GetSfxReverb(u8 bankId, u8 entryIndex, u8 channelId) {
 }
 
 s8 Audio_GetSfxPan(f32 xPos, f32 zPos, u8 mode) {
-    if (sSfxChannelLayout != SFXCHAN_3) {
+    // @mod: the VS CPU mode shows one view, so it pans like the single player game
+    if ((sSfxChannelLayout != SFXCHAN_3) || SFModVs_Active()) {
         float absx = ABSF(xPos);
         float absz = ABSF(zPos);
 
@@ -506,7 +508,7 @@ f32 Audio_GetSfxFreqMod(u8 bankId, u8 entryIndex) {
             freqMod += 0.2f * (distance / 33000.0f);
         }
     }
-    if ((sSfxChannelLayout != SFXCHAN_0) && (sSfxBanks[bankId][entryIndex].token & 2)) {
+    if ((sSfxChannelLayout != SFXCHAN_0) && (sSfxBanks[bankId][entryIndex].token & 2) && !SFModVs_Active()) {
         freqMod *= 1.1f;
     }
     return freqMod;
@@ -536,7 +538,7 @@ void Audio_SetSfxProperties(u8 bankId, u8 entryIndex, u8 channelId) {
             reverb = Audio_GetSfxReverb(bankId, entryIndex, channelId);
             freqMod = Audio_GetSfxFreqMod(bankId, entryIndex) * *entry->freqMod;
             if (!((bankId == SFX_BANK_PLAYER) && ((-200.0f < *entry->zPos) && (*entry->zPos < 200.0f)) &&
-                  (sSfxChannelLayout != SFXCHAN_3))) {
+                  ((sSfxChannelLayout != SFXCHAN_3) || SFModVs_Active()))) {
                 pan = Audio_GetSfxPan(*entry->xPos, *entry->zPos, entry->token);
             }
             break;
@@ -546,7 +548,7 @@ void Audio_SetSfxProperties(u8 bankId, u8 entryIndex, u8 channelId) {
                     AUDIOCMD_CHANNEL_SET_IO(SEQ_PLAYER_SFX, channelId, 1, CVarGetInteger("gVoiceLanguage", 0));
                 }
             }
-            if (sSfxChannelLayout == SFXCHAN_3) {
+            if ((sSfxChannelLayout == SFXCHAN_3) && !SFModVs_Active()) {
                 if (entry->token != 4) {
                     pan = (entry->token & 1) * 127;
                 }
@@ -1939,7 +1941,7 @@ void Audio_ResetPlayerFreqMods(void) {
     u8 i;
     u8 j;
 
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < MAX_PLAYERS; i++) { // @mod: was 4
         for (j = 0; j < 5; j++) {
             sPlayerNoise[i].freqMod[j].value = 1.0f;
             sPlayerNoise[i].freqMod[j].timer = 0;
@@ -2133,7 +2135,7 @@ void Audio_UpdatePlayerFreqMod(void) {
     u8 playerId;
 
 #ifdef AVOID_UB
-    for (playerId = 0; playerId < gCamCount; playerId++) {
+    for (playerId = 0; playerId < MIN(gCamCount, MAX_PLAYERS); playerId++) {
 #else
     for (playerId = 0; playerId < 4; playerId++) {
 #endif
@@ -2159,7 +2161,7 @@ void Audio_UpdatePlayerFreqMod(void) {
 void Audio_UpdatePlayerReverb(void) {
     u8 playerId;
 
-    for (playerId = 0; playerId < 4; playerId++) {
+    for (playerId = 0; playerId < MIN(gCamCount, MAX_PLAYERS); playerId++) { // @mod: was 4
         if ((sPlayerNoise[playerId].form == FORM_ARWING) && (gPlayer[playerId].sfx.levelType == LEVELTYPE_PLANET)) {
             if (gPlayer[playerId].pos.y < 150.0f) {
                 sPlayerNoise[playerId].reverbAdd = (150.0f - gPlayer[playerId].pos.y) * 0.53f;
@@ -2179,7 +2181,7 @@ void Audio_ResetVoicesAndPlayers(void) {
     u8 playerId;
 
     Audio_ResetPlayerFreqMods();
-    for (playerId = 0; playerId < 4; playerId++) {
+    for (playerId = 0; playerId < MAX_PLAYERS; playerId++) { // @mod: was 4
         sPlayerNoise[playerId].form = FORM_NONE;
         sPlayerNoise[playerId].reverbAdd = 0;
         sPlayerNoise[playerId].totalMod = 1.0f;

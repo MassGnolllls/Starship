@@ -1,5 +1,6 @@
 #ifndef SF64_OBJECT
 #define SF64_OBJECT
+#include "sfmod_config.h"
 
 #include <libultraship.h>
 #include "sf64math.h"
@@ -296,7 +297,7 @@ typedef struct Actor {
     /* 0x0C6 */ u16 timer_0C6;
     /* 0x0C8 */ u8 unk_0C8; // may have been used for scenery shadowing
     /* 0x0C9 */ u8 drawShadow;
-    /* 0x0CA */ u8 lockOnTimers[4];
+    /* 0x0CA */ u8 lockOnTimers[MAX_PLAYERS]; // @mod: was [4]
     /* 0x0CE */ s16 health;
     /* 0x0D0 */ s8 dmgType;
     /* 0x0D2 */ s16 dmgPart;

@@ -137,11 +137,11 @@ f32 gLight3x;          // Vec3f?
 f32 gLight3y;
 f32 gLight3z;
 s32 gFadeoutType;
-u32 gPlayerGlareAlphas[4];
-s32 gPlayerGlareReds[4];
-s32 gPlayerGlareGreens[4];
-s32 gPlayerGlareBlues[4];
-UNK_TYPE D_ctx_801783C0[4]; // unused. player alpha targets?
+u32 gPlayerGlareAlphas[MAX_PLAYERS];
+s32 gPlayerGlareReds[MAX_PLAYERS];
+s32 gPlayerGlareGreens[MAX_PLAYERS];
+s32 gPlayerGlareBlues[MAX_PLAYERS];
+UNK_TYPE D_ctx_801783C0[MAX_PLAYERS]; // unused. player alpha targets?
 f32 gSunViewX;              // something x translate
 f32 gSunViewY;              // something y translate
 s32 gFogNear;               // near
@@ -265,12 +265,12 @@ s32 D_ctx_80161A84;
 
 GroundSurface gGroundSurface;
 GroundSurface gSavedGroundSurface;
-u8 gGoldRingCount[4];
-u8 gSavedGoldRingCount[4];
+u8 gGoldRingCount[MAX_PLAYERS];
+u8 gSavedGoldRingCount[MAX_PLAYERS];
 s32 gHitCount;
 s32 gSavedHitCount;
-s16 gLifeCount[4];
-LaserStrength gLaserStrength[4];
+s16 gLifeCount[MAX_PLAYERS];
+LaserStrength gLaserStrength[MAX_PLAYERS];
 s32 gCullObjects;
 UNK_TYPE F_80161AC0[4];
 UNK_TYPE F_80161AD0[4];
@@ -283,7 +283,7 @@ Actor gActors[60];
 Boss gBosses[4];
 Effect gEffects[100];
 Item gItems[20];
-PlayerShot gPlayerShots[16];
+PlayerShot gPlayerShots[PLAYERSHOT_COUNT];
 TexturedLine gTexturedLines[100];
 RadarMark gRadarMarks[65];
 BonusText gBonusText[10];
@@ -301,45 +301,45 @@ s32 gLevelStartStatusScreenTimer;
 s32 gLevelClearScreenTimer; // timer for mission accomplished screen
 s32 gBossHealthBar;
 s32 D_ctx_80177850;    // bonus text related. set to 15 but never read
-s32 D_ctx_80177858[4]; // set to 3 but never used. related to VS mode customization?
-PlayerForm gPlayerForms[4];
-s32 gHandicap[4];
+s32 D_ctx_80177858[MAX_PLAYERS]; // set to 3 but never used. related to VS mode customization?
+PlayerForm gPlayerForms[MAX_PLAYERS];
+s32 gHandicap[MAX_PLAYERS];
 VsStage gVersusStage;
 s32 gVsPointsToWin;
 s32 gVsMatchType;
 s32 gVsTimeTrialLimit;
 bool gVersusMode;
-u16 gBoostButton[4];
-u16 gBrakeButton[4];
-u16 gShootButton[4];
-u16 gBombButton[4];
-f32 D_ctx_80177958[4]; // set to 1.0f but never used
+u16 gBoostButton[MAX_PLAYERS];
+u16 gBrakeButton[MAX_PLAYERS];
+u16 gShootButton[MAX_PLAYERS];
+u16 gBombButton[MAX_PLAYERS];
+f32 D_ctx_80177958[MAX_PLAYERS]; // set to 1.0f but never used
 s32 gTeamLowHealthMsgTimer;
 OSContPad* gInputHold;
 OSContPad* gInputPress;
 u8* gControllerRumble;
-s32 D_ctx_80177990[4]; // these two are also rumble related
-f32 D_ctx_801779A8[4];
+s32 D_ctx_80177990[MAX_PLAYERS]; // these two are also rumble related
+f32 D_ctx_801779A8[MAX_PLAYERS];
 u8 gPauseEnabled;
-s32 gChargeTimers[4];
+s32 gChargeTimers[MAX_PLAYERS];
 f32 gPathVelX;
 f32 gPathVelY;
-s32 gUturnDownTimers[4];
-s32 gUturnBrakeTimers[4];
-s32 gLoopDownTimers[4];
-s32 gLoopBoostTimers[4];
-f32 gMuzzleFlashScale[4];
-f32 gShieldAlpha[4];
-s32 gHasShield[4];
-s32 gShieldTimer[4];
-s32 gVsLockOnTimers[4][4];
+s32 gUturnDownTimers[MAX_PLAYERS];
+s32 gUturnBrakeTimers[MAX_PLAYERS];
+s32 gLoopDownTimers[MAX_PLAYERS];
+s32 gLoopBoostTimers[MAX_PLAYERS];
+f32 gMuzzleFlashScale[MAX_PLAYERS];
+f32 gShieldAlpha[MAX_PLAYERS];
+s32 gHasShield[MAX_PLAYERS];
+s32 gShieldTimer[MAX_PLAYERS];
+s32 gVsLockOnTimers[MAX_PLAYERS][MAX_PLAYERS];
 u8 gStartAndrossFightTimer;
 u8 gSoShieldsEmpty;
 u8 gCoUturnCount;
 u8 gGreatFoxIntact;
 u8 gTiStartLandmaster;
-u16 gControllerRumbleTimers[4];
-u16 gPlayerScores[4];
+u16 gControllerRumbleTimers[MAX_PLAYERS];
+u16 gPlayerScores[MAX_PLAYERS];
 s32 gCircleWipeFrame;
 s32 gFovYMode; // sets camera field of view Y. initialized to 0 and never changed
 s32 gTraining360MsgTimer;
@@ -353,15 +353,15 @@ s32 D_ctx_80177CBC;
 s32 D_ctx_80177CC4;
 s32 gStarWolfTeamAlive[6];
 s32 gSavedStarWolfTeamAlive[6];
-s32 gRightWingHealth[4];
-s32 gLeftWingHealth[4];
-s32 gRightWingFlashTimer[4];
-s32 gLeftWingFlashTimer[4];
-s32 gRightWingDebrisTimer[4];
-s32 gLeftWingDebrisTimer[4];
-s32 gBombCount[4];
-s32 gVsPoints[4];
-s32 gVsKills[4][10];
+s32 gRightWingHealth[MAX_PLAYERS];
+s32 gLeftWingHealth[MAX_PLAYERS];
+s32 gRightWingFlashTimer[MAX_PLAYERS];
+s32 gLeftWingFlashTimer[MAX_PLAYERS];
+s32 gRightWingDebrisTimer[MAX_PLAYERS];
+s32 gLeftWingDebrisTimer[MAX_PLAYERS];
+s32 gBombCount[MAX_PLAYERS];
+s32 gVsPoints[MAX_PLAYERS];
+s32 gVsKills[MAX_PLAYERS][10];
 s32 gVsMatchWon;
 bool gVsMatchStart;
 bool gChangeTo360;

@@ -64,7 +64,7 @@ u8 gVIsPerFrame;
 u32 gSysFrameCount;
 u8 gStartNMI;
 u8 gStopTasks;
-u8 gControllerRumbleFlags[4];
+u8 gControllerRumbleFlags[MAX_PLAYERS];
 u16 gFillScreenColor;
 u16 gFillScreen;
 

@@ -5,6 +5,7 @@
  */
 
 #include "port/sfmod/SFMod.h"
+#include "port/sfmod/SFModVs.h"
 #include "mods.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
@@ -599,7 +600,7 @@ void Option_Entry_Update(void) {
             break;
 
         case OPTION_VERSUS:
-            Option_Versus_Update();
+            SFModVs_MenuUpdate(); // @mod: was Option_Versus_Update()
             break;
 
         case OPTION_RANKING:
@@ -654,7 +655,7 @@ void Option_Entry_Draw(void) {
             break;
 
         case OPTION_VERSUS:
-            Option_Versus_Draw();
+            SFModVs_MenuDraw(); // @mod: was Option_Versus_Draw()
             break;
 
         case OPTION_RANKING:
@@ -701,6 +702,22 @@ void Option_Entry_Draw(void) {
         Wipe_Draw(WIPE_VERTICAL, sWipeHeight);
         Matrix_Pop(&gGfxMatrix);
     }
+}
+
+// @mod: used by the VS CPU setup screen (SFModVs.c)
+void Option_SFMod_ReturnToMainMenu(void) {
+    AUDIO_PLAY_SFX(NA_SE_ARWING_CANCEL, gDefaultSfxSource, 4);
+    sMainMenuState = 0;
+    sMenuEntryState = OPTION_MAIN_MENU;
+    gDrawMode = DRAW_NONE;
+    sMainMenuFromCancel = true;
+}
+
+void Option_SFMod_StartVersus(void) {
+    gGameState = GSTATE_VS_INIT;
+    gNextGameStateTimer = 2;
+    gOptionMenuStatus = OPTION_WAIT;
+    gDrawMode = DRAW_NONE;
 }
 
 void Option_Entry_Setup(void) {
@@ -972,12 +989,8 @@ void Option_MainMenu_Update(void) {
                 }
             }
 
+            // @mod: the VS card opens the VS CPU mode (SFModVs.c), so it is always available
             if (gControllerPress[gMainController].button & (A_BUTTON | START_BUTTON)) {
-#if DEBUG_VERSUS == 0
-                if (sMainMenuCursor == 2) {
-                    break;
-                }
-#endif
                 AUDIO_PLAY_SFX(NA_SE_ARWING_DECIDE, gDefaultSfxSource, 4);
                 sLightningYpos = sOptionCardPosY[sMainMenuCursor];
                 sDrawCursor = false;

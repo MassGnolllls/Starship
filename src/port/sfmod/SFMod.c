@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "SFMod.h"
+#include "SFModVs.h"
 #include "global.h"
 #include "fox_map.h"
 #include "port/hooks/Events.h"
@@ -161,8 +162,8 @@ bool SFMod_IsFastForwardFrame(void) {
  * like it does for a player tapping very fast - no special rules for anyone.
  * --------------------------------------------------------------------------------------------- */
 
-static u8 sTurboPhase[4];
-static u16 sPrevRawHold[4];
+static u8 sTurboPhase[MAX_PLAYERS];
+static u16 sPrevRawHold[MAX_PLAYERS];
 static s32 sSwapMsgTimer = 0;
 static bool sSwapMsgSwapped = false;
 
@@ -272,7 +273,10 @@ void SFMod_ProcessInput(void) {
         gControllerPress[gMainController].button &= ~START_BUTTON;
     }
 
-    for (i = 0; i < 4; i++) {
+    // VS CPU mode: the CPU pilots' controllers (ports 2-10) are filled by the AI
+    SFModVs_FillInputs();
+
+    for (i = 0; i < (SFModVs_Active() ? MAX_PLAYERS : 4); i++) {
         // gControllerPress is computed against last frame's (already modified) hold state,
         // so the mod tracks the real button state itself.
         u16 rawHold = gControllerHold[i].button;
@@ -307,12 +311,16 @@ static void SFMod_DrawCenteredSmallText(s32 y, const char* text) {
     Graphics_DisplaySmallText((SCREEN_WIDTH - width) / 2, y, 1.0f, 1.0f, (char*) text);
 }
 
-static void SFMod_OnHudDrawPost(IEvent* event) {
+void SFMod_DrawSwapMessage(void) {
     if ((sSwapMsgTimer > 0) && (gPlayState != PLAY_PAUSE)) {
         RCP_SetupDL(&gMasterDisp, SETUPDL_83);
         gDPSetPrimColor(gMasterDisp++, 0, 0, 255, 255, 0, 255);
         SFMod_DrawCenteredSmallText(44, sSwapMsgSwapped ? "FIRE BUTTONS SWAPPED" : "FIRE BUTTONS NORMAL");
     }
+}
+
+static void SFMod_OnHudDrawPost(IEvent* event) {
+    SFMod_DrawSwapMessage();
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -388,6 +396,11 @@ bool SFMod_TestBoot(void) {
     static bool sDone = false;
     const char* level = getenv("SFMOD_TEST_LEVEL");
     const char* laser = getenv("SFMOD_TEST_LASER");
+
+    if (!sDone && SFModVs_TestBoot()) {
+        sDone = true;
+        return true;
+    }
 
     if (!sDone && (getenv("SFMOD_TEST_ENDING") != NULL)) {
         sDone = true;
