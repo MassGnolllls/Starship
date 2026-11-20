@@ -1,3 +1,4 @@
+#include "port/sfmod/SFMod.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
 #include "fox_map.h"
@@ -7170,9 +7171,11 @@ void Play_Main(void) {
                 Play_Update();
             }
 
+            // @mod: level intros can always be skipped (originally only on planets cleared before)
             if ((gControllerPress[gMainController].button & START_BUTTON) &&
                 (gPlayer[0].state == PLAYERSTATE_LEVEL_INTRO) &&
-                gSaveFile.save.data.planet[sSaveSlotFromLevel[gCurrentLevel]].normalClear) {
+                (gSaveFile.save.data.planet[sSaveSlotFromLevel[gCurrentLevel]].normalClear ||
+                 (SFMod_SkipCutscenesEnabled() && !gVersusMode))) {
                 Audio_ClearVoice();
                 Audio_SetEnvSfxReverb(0);
                 Play_ClearObjectData();

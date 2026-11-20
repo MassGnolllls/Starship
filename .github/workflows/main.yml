@@ -1,7 +1,9 @@
 name: GenerateBuilds
 
+# @mod: the mod fork only builds Windows (sf64mod-windows.yml); this full multi-platform
+# build only runs when started by hand
 on:
-  push:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

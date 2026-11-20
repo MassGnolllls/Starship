@@ -1,3 +1,4 @@
+#include "port/sfmod/SFMod.h"
 #include "global.h"
 #include "assets/ast_title.h"
 #include "assets/ast_ending_award_front.h"
@@ -1048,7 +1049,8 @@ void Ending_Main(void) {
     gCsFrameCount++;
     gGameFrameCount++;
 
-    if (gSaveFile.save.data.padEE[0] == 1) {
+    // @mod: the ending and credits can always be skipped (Starship: only after seeing them once)
+    if ((gSaveFile.save.data.padEE[0] == 1) || SFMod_SkipCutscenesEnabled()) {
         gControllerLock = 0;
         if (gControllerPress[0].button & START_BUTTON) {
             D_ending_80196D00 = 7;

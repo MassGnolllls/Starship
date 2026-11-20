@@ -1,6 +1,8 @@
 #include "ImguiUI.h"
 #include "UIWidgets.h"
 #include "ResolutionEditor.h"
+#include "port/sfmod/SFModControls.h"
+#include "port/sfmod/SFMod.h"
 
 #include <spdlog/spdlog.h>
 #include <imgui.h>
@@ -33,6 +35,7 @@ std::shared_ptr<Ship::GuiWindow> mInputEditorWindow;
 std::shared_ptr<Ship::GuiWindow> mGfxDebuggerWindow;
 std::shared_ptr<Notification::Window> mNotificationWindow;
 std::shared_ptr<AdvancedResolutionSettings::AdvancedResolutionSettingsWindow> mAdvancedResolutionSettingsWindow;
+std::shared_ptr<SFMod::ControlsWindow> mSFModControlsWindow;
 
 void SetupGuiElements() {
     auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
@@ -76,6 +79,10 @@ void SetupGuiElements() {
 
     mAdvancedResolutionSettingsWindow = std::make_shared<AdvancedResolutionSettings::AdvancedResolutionSettingsWindow>("gAdvancedResolutionEditorEnabled", "Advanced Resolution Settings");
     gui->AddGuiWindow(mAdvancedResolutionSettingsWindow);
+    // @mod: action based controls window
+    mSFModControlsWindow = std::make_shared<SFMod::ControlsWindow>("gSFMod.ControlsWindowOpen", "Controls",
+                                                                   ImVec2(720, 640));
+    gui->AddGuiWindow(mSFModControlsWindow);
     mNotificationWindow = std::make_shared<Notification::Window>("gNotifications", "Notifications Window");
     gui->AddGuiWindow(mNotificationWindow);
     mNotificationWindow->Show();
@@ -86,6 +93,7 @@ void Destroy() {
     gui->RemoveAllGuiWindows();
 
     mAdvancedResolutionSettingsWindow = nullptr;
+    mSFModControlsWindow = nullptr;
     mConsoleWindow = nullptr;
     mStatsWindow = nullptr;
     mInputEditorWindow = nullptr;
@@ -347,6 +355,9 @@ void DrawSettingsMenu(){
         UIWidgets::Spacer(0);
 
         if (UIWidgets::BeginMenu("Controller")) {
+            UIWidgets::WindowButton("Controls (moves)", "gSFMod.ControlsWindowOpen", GameUI::mSFModControlsWindow, {
+                .tooltip = "Set up the keys for every move: click a move, then press the key you want"
+            });
             UIWidgets::WindowButton("Controller Mapping", "gInputEditorWindow", GameUI::mInputEditorWindow);
 
             UIWidgets::Spacer(0);
@@ -913,11 +924,43 @@ void DrawDebugMenu() {
     }
 }
 
+// @mod: settings of the Star Fox 64 mod
+void DrawModMenu() {
+    if (UIWidgets::BeginMenu("Mod")) {
+        UIWidgets::WindowButton("Controls (moves)", "gSFMod.ControlsWindowOpen", GameUI::mSFModControlsWindow, {
+            .tooltip = "Set up the keys for every move: click a move, then press the key you want"
+        });
+
+        UIWidgets::Spacer(0);
+
+        UIWidgets::CVarCheckbox("Start in the main menu", CVAR_SFMOD_BOOT_TO_MENU, {
+            .tooltip = "The game starts right in the main menu, without logo and title screen",
+            .defaultValue = true
+        });
+        UIWidgets::CVarCheckbox("Skip cutscenes with START", CVAR_SFMOD_SKIP_CUTSCENES, {
+            .tooltip = "Every cutscene, briefing and the ending/credits can be skipped with START.\n"
+                       "Nothing is lost: the game plays the scene in fast forward in the background.",
+            .defaultValue = true
+        });
+        UIWidgets::CVarCheckbox("Landmaster uses the laser upgrade", CVAR_SFMOD_TANK_KEEPS_LASER, {
+            .tooltip = "In Landmaster missions the tank fires twin/hyper shots with the laser level\n"
+                       "your Arwing had (the laser level is kept as long as you don't lose a life).",
+            .defaultValue = true
+        });
+
+        ImGui::EndMenu();
+    }
+}
+
 void GameMenuBar::DrawElement() {
     if(ImGui::BeginMenuBar()){
         DrawMenuBarIcon();
 
         DrawGameMenu();
+
+        ImGui::SetCursorPosY(0.0f);
+
+        DrawModMenu();
 
         ImGui::SetCursorPosY(0.0f);
 

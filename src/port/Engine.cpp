@@ -1,4 +1,6 @@
+#include <atomic>
 #include "Engine.h"
+#include "port/sfmod/SFMod.h"
 #include "ui/ImguiUI.h"
 #include "StringHelper.h"
 
@@ -130,8 +132,25 @@ GameEngine::GameEngine() {
                                            // ShipDeviceIndexMappingManager::UpdateControllerNamesFromConfig()
 
     auto defaultMappings = std::make_shared<Ship::ControllerDefaultMappings>(
-        // KeyboardKeyToButtonMappings - use built-in LUS defaults
-        std::unordered_map<CONTROLLERBUTTONS_T, std::unordered_set<Ship::KbScancode>>(),
+        // KeyboardKeyToButtonMappings - LUS defaults plus the mod's extra buttons
+        std::unordered_map<CONTROLLERBUTTONS_T, std::unordered_set<Ship::KbScancode>>{
+            { BTN_A, { Ship::KbScancode::LUS_KB_X } },
+            { BTN_B, { Ship::KbScancode::LUS_KB_C } },
+            { BTN_L, { Ship::KbScancode::LUS_KB_E } },
+            { BTN_R, { Ship::KbScancode::LUS_KB_R } },
+            { BTN_Z, { Ship::KbScancode::LUS_KB_Z } },
+            { BTN_START, { Ship::KbScancode::LUS_KB_SPACE } },
+            { BTN_CUP, { Ship::KbScancode::LUS_KB_ARROWKEY_UP } },
+            { BTN_CDOWN, { Ship::KbScancode::LUS_KB_ARROWKEY_DOWN } },
+            { BTN_CLEFT, { Ship::KbScancode::LUS_KB_ARROWKEY_LEFT } },
+            { BTN_CRIGHT, { Ship::KbScancode::LUS_KB_ARROWKEY_RIGHT } },
+            { BTN_DUP, { Ship::KbScancode::LUS_KB_T } },
+            { BTN_DDOWN, { Ship::KbScancode::LUS_KB_G } },
+            { BTN_DLEFT, { Ship::KbScancode::LUS_KB_F } },
+            { BTN_DRIGHT, { Ship::KbScancode::LUS_KB_H } },
+            { SFMOD_BTN_TURBO, { Ship::KbScancode::LUS_KB_V } },
+            { SFMOD_BTN_SWAP, { Ship::KbScancode::LUS_KB_Q } },
+        },
         // KeyboardKeyToAxisDirectionMappings - use built-in LUS defaults
         std::unordered_map<Ship::StickIndex, std::vector<std::pair<Ship::Direction, Ship::KbScancode>>>(),
         // SDLButtonToButtonMappings
@@ -140,7 +159,9 @@ GameEngine::GameEngine() {
             { BTN_B, { SDL_CONTROLLER_BUTTON_X } },
             { BTN_START, { SDL_CONTROLLER_BUTTON_START } },
             { BTN_CLEFT, { SDL_CONTROLLER_BUTTON_Y } },
-            { BTN_CDOWN, { SDL_CONTROLLER_BUTTON_B } },
+            // @mod: the east face button is turbo fire now, brake stays on the left trigger
+            { SFMOD_BTN_TURBO, { SDL_CONTROLLER_BUTTON_B } },
+            { SFMOD_BTN_SWAP, { SDL_CONTROLLER_BUTTON_BACK } },
             { BTN_DUP, { SDL_CONTROLLER_BUTTON_DPAD_UP } },
             { BTN_DDOWN, { SDL_CONTROLLER_BUTTON_DPAD_DOWN } },
             { BTN_DLEFT, { SDL_CONTROLLER_BUTTON_DPAD_LEFT } },
@@ -160,7 +181,9 @@ GameEngine::GameEngine() {
         // SDLAxisDirectionToAxisDirectionMappings - use built-in LUS defaults
         std::unordered_map<Ship::StickIndex, std::vector<std::pair<Ship::Direction, std::pair<SDL_GameControllerAxis, int32_t>>>>()
     );
-    auto controlDeck = std::make_shared<LUS::ControlDeck>(std::vector<CONTROLLERBUTTONS_T>(), defaultMappings);
+    // @mod: two extra mappable buttons (turbo fire, swap fire buttons), see SFMod.h
+    auto controlDeck = std::make_shared<LUS::ControlDeck>(
+        std::vector<CONTROLLERBUTTONS_T>({ SFMOD_BTN_TURBO, SFMOD_BTN_SWAP }), defaultMappings);
 
     this->context->InitResourceManager(archiveFiles, {}, 3); // without this line InitWindow fails in Gui::Init()
     this->context->InitConsole(); // without this line the GuiWindow constructor fails in ConsoleWindow::InitElement()
@@ -302,6 +325,7 @@ void GameEngine::Create() {
     osSetTime(0);
 #endif
     PortEnhancements_Init();
+    SFMod_Init();
 }
 
 void GameEngine::Destroy() {
@@ -359,6 +383,13 @@ extern "C" int countermin = 0;
 extern "C" unsigned short samples_high = SAMPLES_HIGH;
 extern "C" unsigned short samples_low = SAMPLES_LOW;
 
+// @mod: see GameEngine::SetDiscardAudio
+static std::atomic<bool> sDiscardAudio = false;
+
+void GameEngine::SetDiscardAudio(bool discard) {
+    sDiscardAudio = discard;
+}
+
 void GameEngine::HandleAudioThread() {
 #ifdef PIPE_DEBUG
     std::ofstream outfile("audio.bin", std::ios::binary | std::ios::app);
@@ -402,8 +433,10 @@ void GameEngine::HandleAudioThread() {
                           num_audio_samples * (sizeof(int16_t) * num_audio_channels * AUDIO_FRAMES_PER_UPDATE));
         }
 #endif
-        AudioPlayerPlayFrame((u8*) audio_buffer,
-                             num_audio_samples * (sizeof(int16_t) * num_audio_channels * AUDIO_FRAMES_PER_UPDATE));
+        if (!sDiscardAudio) {
+            AudioPlayerPlayFrame((u8*) audio_buffer,
+                                 num_audio_samples * (sizeof(int16_t) * num_audio_channels * AUDIO_FRAMES_PER_UPDATE));
+        }
         
         audio.processing = false;
         audio.cv_from_thread.notify_one();

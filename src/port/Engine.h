@@ -36,6 +36,8 @@ class GameEngine {
     static void HandleAudioThread();
     static void StartAudioFrame();
     static void EndAudioFrame();
+    // @mod: while set, the audio thread still runs but its output is thrown away (cutscene skip)
+    static void SetDiscardAudio(bool discard);
     static void AudioInit();
     static void AudioExit();
     static void RunCommands(Gfx* Commands, const std::vector<std::unordered_map<Mtx*, MtxF>>& mtx_replacements);

@@ -4,6 +4,7 @@
  * Description: Starfox Map Handler
  */
 
+#include "port/sfmod/SFMod.h"
 #include "mods.h"
 #include "global.h"
 #include "fox_map.h"
@@ -1835,6 +1836,15 @@ bool Map_PlanetSaveSlot_Setup(LevelId levelId, PlanetSaveSlotTypes type) {
     }
 
     return ret;
+}
+
+// @mod: lets the mod check what the map is doing (used for skipping)
+s32 Map_GetMapState(void) {
+    return sMapState;
+}
+
+s32 Map_GetLevelStartState(void) {
+    return sLevelStartState;
 }
 
 void Map_Update(void) {
@@ -3954,7 +3964,9 @@ void Map_LevelStart_Update(void) {
             break;
 
         case 1:
-            if ((gControllerPress[gMainController].button & START_BUTTON) && !sLevelPlayed) {
+            // @mod: briefings can always be skipped (originally only for planets played before)
+            if ((gControllerPress[gMainController].button & START_BUTTON) &&
+                (!sLevelPlayed || SFMod_SkipCutscenesEnabled())) {
                 Audio_KillSfxById(NA_SE_COMPUTER_NOISE);
                 Audio_ClearVoice();
                 D_menu_801CF018 = 0;
@@ -3962,12 +3974,14 @@ void Map_LevelStart_Update(void) {
                 sMapTimer1 = 0;
             }
 
-            if ((gControllerPress[gMainController].button & A_BUTTON) && (D_menu_801CD9A0 == false) && !sLevelPlayed) {
+            if ((gControllerPress[gMainController].button & A_BUTTON) && (D_menu_801CD9A0 == false) &&
+                (!sLevelPlayed || SFMod_SkipCutscenesEnabled())) {
                 Audio_ClearVoice();
                 gRadioStateTimer = 0;
             }
 
-            if ((gControllerPress[gMainController].button & A_BUTTON) && (D_menu_801CD9A0 == true) && !sLevelPlayed) {
+            if ((gControllerPress[gMainController].button & A_BUTTON) && (D_menu_801CD9A0 == true) &&
+                (!sLevelPlayed || SFMod_SkipCutscenesEnabled())) {
                 D_menu_801CD9A0 = false;
             }
 

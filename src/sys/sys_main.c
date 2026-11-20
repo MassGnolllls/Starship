@@ -1,3 +1,4 @@
+#include "port/sfmod/SFMod.h"
 #include "sys.h"
 #include "sf64audio_external.h"
 
@@ -229,16 +230,30 @@ void Graphics_ThreadEntry(void* arg0) {
     // }
 }
 
+static void Graphics_ThreadUpdateImpl(bool present);
+
 void Graphics_ThreadUpdate() {
+    Graphics_ThreadUpdateImpl(true);
+}
+
+// @mod: runs one game frame without showing it (used to fast-forward skipped cutscenes)
+void Graphics_ThreadUpdateNoPresent() {
+    Graphics_ThreadUpdateImpl(false);
+}
+
+static void Graphics_ThreadUpdateImpl(bool present) {
 
     if (GfxDebuggerIsDebugging()) {
-        Graphics_PushFrame(gGfxPool->masterDL);
+        if (present) {
+            Graphics_PushFrame(gGfxPool->masterDL);
+        }
         return;
     }
 
     gSysFrameCount++;
     Graphics_InitializeTask(gSysFrameCount);
     Controller_UpdateInput();
+    SFMod_ProcessInput(); // @mod: turbo fire, fire button swap, cutscene skip
     Controller_ReadData();
     Controller_Rumble();
     Main_SetVIMode();
@@ -257,14 +272,16 @@ void Graphics_ThreadUpdate() {
     }
     Graphics_SetTask();
 
-    if (GfxDebuggerIsDebuggingRequested()) {
-        GfxDebuggerDebugDisplayList(gGfxPool->masterDL);
-    }
+    if (present) {
+        if (GfxDebuggerIsDebuggingRequested()) {
+            GfxDebuggerDebugDisplayList(gGfxPool->masterDL);
+        }
 
-    Graphics_PushFrame(gGfxPool->masterDL);
+        Graphics_PushFrame(gGfxPool->masterDL);
 
-    if (gFillScreen == 0) {
-        osViSwapBuffer(&gFrameBuffers[(gSysFrameCount - 1) % 3]);
+        if (gFillScreen == 0) {
+            osViSwapBuffer(&gFrameBuffers[(gSysFrameCount - 1) % 3]);
+        }
     }
 
     // LTODO: FAULT_CRASH

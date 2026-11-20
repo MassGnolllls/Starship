@@ -1,0 +1,79 @@
+name: SF64 Mod - Windows build
+
+# Builds the mod for Windows and publishes it as a (pre)release, so the build can be
+# downloaded from the Releases page. No game assets are included: the game creates
+# sf64.o2r from your own ROM on the first start.
+
+on:
+  push:
+    branches: [ "sf64-mod" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  generate-port-o2r:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install dependencies
+        run: sudo apt-get install gcc g++ git cmake ninja-build lsb-release
+      - name: Generate starship.o2r
+        run: |
+          make -C tools/Torch type=release -j3
+          tools/Torch/cmake-build-release/torch pack port starship.o2r o2r
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starship.o2r
+          path: starship.o2r
+          retention-days: 1
+
+  build-windows:
+    needs: generate-port-o2r
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        run: |
+          cmake -S . -B "build/x64" -G "Visual Studio 17 2022" -T v143 -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake --build ./build/x64 --config Release --parallel 10
+      - name: Download starship.o2r
+        uses: actions/download-artifact@v4
+        with:
+          name: starship.o2r
+          path: ./build/x64/Release
+      - name: Create package
+        shell: pwsh
+        run: |
+          mkdir sf64-mod
+          Copy-Item build/x64/Release/Starship.exe sf64-mod/
+          Copy-Item build/x64/Release/starship.o2r sf64-mod/
+          Copy-Item config.yml sf64-mod/
+          Copy-Item -Recurse assets sf64-mod/assets
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/master/gamecontrollerdb.txt" -OutFile "sf64-mod/gamecontrollerdb.txt"
+          Compress-Archive -Path sf64-mod/* -DestinationPath SF64Mod-windows.zip
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SF64Mod-windows
+          path: sf64-mod
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: SF64 Mod build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          body: |
+            Windows build of the Star Fox 64 mod (commit ${{ github.sha }}).
+            Unzip, start Starship.exe and select your Star Fox 64 (US 1.0/1.1) ROM on the first start.
+          files: SF64Mod-windows.zip

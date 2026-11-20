@@ -1,3 +1,4 @@
+#include "port/sfmod/SFMod.h"
 #include "global.h"
 #include "assets/ast_arwing.h"
 #include "assets/ast_ending_expert.h"
@@ -1104,7 +1105,7 @@ void Ending_801924EC(u32 arg0) {
 }
 
 void Ending_801926D4(void) {
-    if (gSaveFile.save.data.padEE[0] == 1) {
+    if ((gSaveFile.save.data.padEE[0] == 1) || SFMod_SkipCutscenesEnabled()) { // @mod
         gControllerLock = 0;
     } else {
         gControllerLock = 10000;

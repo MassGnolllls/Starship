@@ -1,3 +1,4 @@
+#include "port/sfmod/SFMod.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
 #include "sf64dma.h"
@@ -58,18 +59,19 @@ void Game_Initialize(void) {
     Rand_Init();
     Rand_SetSeed(1, 29000, 9876);
     gGameState = GSTATE_BOOT;
-#ifdef MODS_BOOT_STATE
-    gNextGameState = GSTATE_INIT;
-    if (Save_Read() != 0) {
+    // @mod: boot straight into the main menu (no logo, no title screen)
+    if (SFMod_BootToMenu()) {
+        gNextGameState = GSTATE_INIT;
+        if (Save_Read() != 0) {
 #ifdef AVOID_UB
-        gSaveFile.save = gDefaultSave;
-        gSaveFile.backup = gDefaultSave;
+            gSaveFile.save = gDefaultSave;
+            gSaveFile.backup = gDefaultSave;
 #else
-        gSaveFile = *((SaveFile*) &gDefaultSave);
+            gSaveFile = *((SaveFile*) &gDefaultSave);
 #endif
-        Save_Write();
+            Save_Write();
+        }
     }
-#endif
     gNextGameStateTimer = 0;
     gBgColor = 0;
     gBlurAlpha = 255;
@@ -431,6 +433,12 @@ void Game_Update(void) {
 #ifdef MODS_BOOT_STATE
                 gNextGameState = MODS_BOOT_STATE;
 #endif
+                // @mod: whenever the game would return to the title screen, go to the main menu instead
+                if (SFMod_BootToMenu()) {
+                    gNextGameState = GSTATE_MENU;
+                }
+                // @mod: automated tests can boot straight into a level
+                SFMod_TestBoot();
                 CVarSetFloat("gMainMusicVolume", gSaveFile.save.data.musicVolume / 100.0f);
                 CVarSetFloat("gVoiceVolume", gSaveFile.save.data.voiceVolume / 100.0f);
                 CVarSetFloat("gSFXMusicVolume", gSaveFile.save.data.sfxVolume / 100.0f);

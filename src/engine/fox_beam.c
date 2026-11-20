@@ -1,3 +1,4 @@
+#include "port/sfmod/SFMod.h"
 #include "global.h"
 #include "assets/ast_landmaster.h"
 #include "assets/ast_aquas.h"
@@ -667,7 +668,8 @@ void PlayerShot_ApplyDamageToActor(PlayerShot* shot, Actor* actor, s32 hitIndex)
     actor->dmgPart = hitIndex - 1;
     actor->timer_0C2 = 2;
     actor->damage = 10;
-    if ((shot->sourceId < 4) && (gPlayer[shot->sourceId].form != FORM_LANDMASTER)) {
+    // @mod: the Landmaster can use the laser level the Arwing had
+    if ((shot->sourceId < 4) && ((gPlayer[shot->sourceId].form != FORM_LANDMASTER) || SFMod_TankKeepsLaser())) {
         switch (gLaserStrength[shot->sourceId]) {
             case LASERS_TWIN:
                 actor->damage = 12;
@@ -1394,13 +1396,40 @@ void PlayerShot_DrawShot(PlayerShot* shot) {
                     } else {
                         var_fv1 = 0.0f;
                     }
+                    if (SFMod_TankKeepsLaser() && (shot->sourceId < 4) &&
+                        (gLaserStrength[shot->sourceId] > LASERS_SINGLE)) {
+                        // @mod: twin/hyper laser for the Landmaster: two shots side by side,
+                        // the hyper laser in blue like the Arwing's
+                        RCP_SetupDL_68();
+                        gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, 255, 255, 255, 255);
+                        if (gLaserStrength[shot->sourceId] == LASERS_HYPER) {
+                            gDPSetEnvColor(gMasterDisp++, 32, 128, 255, 0);
+                        } else {
+                            gDPSetEnvColor(gMasterDisp++, 0, 255, 0, 0);
+                        }
+                        gSPClearGeometryMode(gMasterDisp++, G_CULL_BACK);
+                        Matrix_Push(&gGfxMatrix);
+                        Matrix_Translate(gGfxMatrix, 22.0f, 0.0f, 0.0f, MTXF_APPLY);
+                        Matrix_RotateY(gGfxMatrix, var_fv1, MTXF_APPLY);
+                        Matrix_RotateZ(gGfxMatrix, 30.0f * M_DTOR, MTXF_APPLY);
+                        Matrix_Scale(gGfxMatrix, 1.0f, 0.65f, 1.0f, MTXF_APPLY);
+                        Matrix_SetGfxMtx(&gMasterDisp);
+                        gSPDisplayList(gMasterDisp++, D_landmaster_3006940);
+                        Matrix_Pop(&gGfxMatrix);
+                        Matrix_Translate(gGfxMatrix, -22.0f, 0.0f, 0.0f, MTXF_APPLY);
+                    }
                     Matrix_RotateY(gGfxMatrix, var_fv1, MTXF_APPLY);
                     Matrix_RotateZ(gGfxMatrix, 30.0f * M_DTOR, MTXF_APPLY);
                     Matrix_Scale(gGfxMatrix, 1.0f, 0.65f, 1.0f, MTXF_APPLY);
                     Matrix_SetGfxMtx(&gMasterDisp);
                     RCP_SetupDL_68();
                     gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, 255, 255, 255, 255);
-                    gDPSetEnvColor(gMasterDisp++, 0, 255, 0, 0);
+                    if (SFMod_TankKeepsLaser() && (shot->sourceId < 4) &&
+                        (gLaserStrength[shot->sourceId] == LASERS_HYPER)) {
+                        gDPSetEnvColor(gMasterDisp++, 32, 128, 255, 0);
+                    } else {
+                        gDPSetEnvColor(gMasterDisp++, 0, 255, 0, 0);
+                    }
                     gSPClearGeometryMode(gMasterDisp++, G_CULL_BACK);
                     gSPDisplayList(gMasterDisp++, D_landmaster_3006940);
                 }

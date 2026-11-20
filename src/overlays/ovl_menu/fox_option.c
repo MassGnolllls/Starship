@@ -4,6 +4,7 @@
  * Description: Starfox Option Menu Handler
  */
 
+#include "port/sfmod/SFMod.h"
 #include "mods.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
@@ -982,7 +983,8 @@ void Option_MainMenu_Update(void) {
                 sDrawCursor = false;
                 sMainMenuState = 11;
             }
-            if (gControllerPress[gMainController].button & B_BUTTON) {
+            // @mod: with "boot to main menu" there is no title screen to go back to
+            if ((gControllerPress[gMainController].button & B_BUTTON) && !SFMod_BootToMenu()) {
                 AUDIO_PLAY_SFX(NA_SE_ARWING_CANCEL, gDefaultSfxSource, 4);
                 sWipeHeight = 0;
                 sLevelStartState = 1;
