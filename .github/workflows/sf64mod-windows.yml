@@ -43,9 +43,12 @@ jobs:
         with:
           submodules: recursive
       - name: Build
+        shell: pwsh
         run: |
-          cmake -S . -B "build/x64" -G "Visual Studio 17 2022" -T v143 -A x64 -DCMAKE_BUILD_TYPE=Release
-          cmake --build ./build/x64 --config Release --parallel 10
+          cmake -S . -B "build/x64" -G "Visual Studio 17 2022" -T v143 -A x64 -DCMAKE_BUILD_TYPE=Release *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmake --build ./build/x64 --config Release --parallel 10 *>&1 | Tee-Object -FilePath build.log -Append
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Download starship.o2r
         uses: actions/download-artifact@v4
         with:
@@ -66,6 +69,36 @@ jobs:
         with:
           name: SF64Mod-windows
           path: sf64-mod
+      - name: Publish build to the ci-build branch
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "ci-build"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item SF64Mod-windows.zip $out/
+          Set-Content -Path (Join-Path $out "BUILD.txt") -Value "commit ${{ github.sha }} run ${{ github.run_number }}"
+          cd $out
+          git init -q
+          git checkout -q -b ci-build
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Windows build ${{ github.run_number }} for ${{ github.sha }}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ci-build
+      - name: Publish build log on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "ci-logs"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          if (Test-Path build.log) { Copy-Item build.log $out/ } else { Set-Content -Path (Join-Path $out "build.log") -Value "no build log" }
+          cd $out
+          git init -q
+          git checkout -q -b ci-logs
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Build log of run ${{ github.run_number }} for ${{ github.sha }}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ci-logs
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
