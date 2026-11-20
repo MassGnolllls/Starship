@@ -1,4 +1,5 @@
 #include "port/sfmod/SFModGame.h"
+#include "port/sfmod/SFModAI.h"
 #include "global.h"
 #include "assets/ast_katina.h"
 #include "assets/ast_venom_2.h"
@@ -2024,6 +2025,31 @@ void ActorAllRange_Update(ActorAllRange* this) {
                 Math_SmoothStepToF(&this->fwork[23], 180.0f, 1.0f, 60.0f, 0.0f);
             }
             break;
+    }
+
+    // @mod: from difficulty 2 on the new AI flies the dogfights (where to fly, when to shoot, when to evade)
+    if (this->state == STATE360_2) {
+        s32 sfFire;
+        s32 sfMove;
+
+        if (SFModGame_StoryAI(this, (gActors[0].state == STATE360_2) || (gCurrentLevel == LEVEL_TRAINING), &sfFire,
+                              &sfMove)) {
+            this->iwork[0] = sfFire;
+            switch (sfMove) {
+                case SFAI_MOVE_LOOP:
+                    this->iwork[16] = STATE360_7;
+                    break;
+                case SFAI_MOVE_UTURN:
+                    this->iwork[16] = STATE360_8;
+                    break;
+                case SFAI_MOVE_BREAK:
+                    this->iwork[16] = STATE360_9;
+                    break;
+                case SFAI_MOVE_ROLL:
+                    this->iwork[16] = STATE360_10;
+                    break;
+            }
+        }
     }
 
     if (sp104 != 0) {

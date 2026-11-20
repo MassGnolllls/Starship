@@ -25,6 +25,13 @@ static const SFAIPersonality sPersonalities[] = {
     { "ACROBAT",     0.65f, 0.50f, 0.50f, 0.30f, 0.30f, 1.00f, 1.00f, 0.90f, 0.70f, 0.30f },
     { "HUNTER",      0.85f, 0.30f, 0.60f, 0.50f, 0.50f, 0.40f, 0.60f, 0.70f, 0.90f, 0.20f },
     { "SCAVENGER",   0.45f, 0.60f, 0.50f, 0.30f, 0.70f, 0.40f, 0.30f, 0.40f, 0.60f, 1.00f },
+    // an all-rounder; on level 7 it plays as strong as it can (see SFAI_BEST)
+    { "BEST",        0.65f, 0.50f, 0.50f, 0.50f, 0.50f, 0.50f, 0.40f, 0.50f, 0.50f, 0.50f },
+};
+#define SFAI_BEST_INDEX 8
+// "BEST" on level 7: the strongest values (rolls only to reflect lasers, so no random rolls)
+static const SFAIPersonality sBestMax = {
+    "BEST", 0.85f, 0.55f, 0.30f, 1.00f, 0.80f, 0.90f, 0.30f, 0.90f, 0.70f, 0.55f,
 };
 
 // per skill level 1..7
@@ -34,6 +41,11 @@ static const f32 sLeadFactor[]     = { 0.0f, 0.35f, 0.55f, 0.75f, 0.9f, 1.0f, 1.
 static const f32 sManeuverSkill[]  = { 0.05f, 0.15f, 0.30f, 0.45f, 0.65f, 0.85f, 1.0f };
 static const f32 sAwareness[]      = { 900.0f, 1300.0f, 1700.0f, 2100.0f, 2600.0f, 3100.0f, 3600.0f };
 static const f32 sWander[]         = { 0.30f, 0.20f, 0.12f, 0.06f, 0.03f, 0.01f, 0.0f };
+// how often it goes for a charged lock-on shot instead of plain lasers, and how fast it can lock on
+static const f32 sChargeUse[]      = { 0.03f, 0.06f, 0.10f, 0.14f, 0.18f, 0.22f, 0.26f };
+static const s32 sChargePatience[] = { 30, 45, 60, 80, 100, 130, 160 };
+// chance per frame to barrel roll when lasers fly at it (rolling ships reflect lasers)
+static const f32 sRollReflex[]     = { 0.0f, 0.0f, 0.01f, 0.03f, 0.06f, 0.12f, 0.25f };
 // clang-format on
 
 #define SFAI_ARENA_SIZE 24000.0f
@@ -90,8 +102,12 @@ typedef struct SFAIState {
     s32 rollDir;
     s32 tapTimer;
     s32 cooldown;    // frames until the next special maneuver
+    s32 rollCooldown;
+    s32 reflexRoll;  // frames left of a barrel roll against incoming lasers
+    s32 reflexDir;
     u16 prevHold;
     s32 debugTimer;
+    bool best;       // the "BEST" personality on level 7: no random hesitation
 } SFAIState;
 
 static SFAIState sAI[MAX_PLAYERS];
@@ -218,10 +234,18 @@ void SFAI_Reset(int32_t playerNum, int32_t level, int32_t personality, uint32_t 
     ai->personality = personality;
     ai->p = sPersonalities[personality];
 
-    // every pilot is a little different, even with the same personality
-    values = &ai->p.aggression;
-    for (i = 0; i < 10; i++) {
-        values[i] = SFAI_Clamp(values[i] + (SFAI_RandF(ai) - 0.5f) * 0.2f, 0.0f, 1.0f);
+    if (personality == SFAI_BEST_INDEX) {
+        // the all-rounder; on the highest level the strongest it can be
+        ai->best = (ai->level == 6);
+        if (ai->best) {
+            ai->p = sBestMax;
+        }
+    } else {
+        // every pilot is a little different, even with the same personality
+        values = &ai->p.aggression;
+        for (i = 0; i < 10; i++) {
+            values[i] = SFAI_Clamp(values[i] + (SFAI_RandF(ai) - 0.5f) * 0.2f, 0.0f, 1.0f);
+        }
     }
 
     ai->target = -1;
@@ -396,6 +420,44 @@ static bool SFAI_IncomingFire(s32 me) {
     return false;
 }
 
+// Other enemies close to the target (the blast of a charged shot hits them too)
+static bool SFAI_TargetHasCompany(s32 target, s32 me) {
+    s32 i;
+
+    if (target < 0) {
+        return false;
+    }
+    for (i = 0; i < gCamCount; i++) {
+        Vec3f d;
+
+        if ((i == target) || (i == me) || !SFAI_PlayerAlive(i) || SFModVs_SameTeam(i, me)) {
+            continue;
+        }
+        SFAI_Delta(&gPlayer[target].pos, &gPlayer[i].pos, &d);
+        if (SFAI_Len(&d) < 400.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Our homing shot is on its way: the lock (and the homing) is lost when the target leaves our view,
+// so keep the nose on the target until it hits.
+static bool SFAI_Guiding(s32 me) {
+    PlayerShot* homing = &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(me)];
+    s32 i;
+
+    if ((homing->obj.status != SHOT_ACTIVE) || (homing->obj.id != PLAYERSHOT_LOCK_ON) || (homing->unk_60 != 0)) {
+        return false;
+    }
+    for (i = 0; i < gCamCount; i++) {
+        if (gVsLockOnTimers[i][me] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void SFAI_StartManeuver(SFAIState* ai, SFAIManeuver maneuver) {
     ai->maneuver = maneuver;
     ai->maneuverFrame = 0;
@@ -409,15 +471,20 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
     f32 skill = sManeuverSkill[ai->level];
     Vec3f d;
     f32 dist = 0.0f;
+    bool guiding;
 
     ai->wantBoost = false;
     ai->wantBrake = false;
+    guiding = SFAI_Guiding(me) && (ai->level >= 2);
 
     // stick to a plan for a while (a target, an item) instead of changing its mind every moment
     if (ai->modeTimer > 0) {
         ai->modeTimer -= sReactionFrames[ai->level];
     }
-    if ((ai->modeTimer <= 0) || (ai->mode == MODE_PATROL) ||
+    if (guiding && (ai->target >= 0) && SFAI_PlayerAlive(ai->target)) {
+        // the homing shot is on its way: keep looking at the target
+        ai->mode = MODE_ATTACK;
+    } else if ((ai->modeTimer <= 0) || (ai->mode == MODE_PATROL) ||
         ((ai->target >= 0) && !SFAI_PlayerAlive(ai->target)) ||
         ((ai->mode == MODE_ITEM) && ((ai->itemTarget < 0) || (gItems[ai->itemTarget].obj.status != OBJ_ACTIVE)))) {
         s32 oldTarget = ai->target;
@@ -478,7 +545,15 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
             threat = -1;
         }
     }
-    if ((threat >= 0) && (ai->maneuver == MANEUVER_NONE) && (ai->cooldown == 0) &&
+    // BEST: somebody close behind that shoots or locked on: a somersault puts it behind the attacker
+    if (guiding) {
+        threat = -1;
+    }
+    if (ai->best && (threat >= 0) && (threatDist < 1600.0f) && (ai->maneuver == MANEUVER_NONE) && (ai->cooldown == 0)) {
+        SFAI_StartManeuver(ai, MANEUVER_LOOP);
+        ai->cooldown = 70;
+    }
+    if ((threat >= 0) && (ai->maneuver == MANEUVER_NONE) && (ai->cooldown == 0) && !ai->best &&
         (SFAI_RandF(ai) < skill * (0.15f + 0.35f * ai->p.caution))) {
         f32 r = SFAI_RandF(ai) * (ai->p.roll + ai->p.loop + ai->p.uturn + 0.3f);
 
@@ -494,6 +569,13 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
         ai->cooldown = 75 + (s32) ((1.0f - skill) * 150.0f);
     }
 
+    if ((ai->itemTarget >= 0) && (ai->level >= 4) && (gLaserStrength[me] == LASERS_SINGLE) &&
+        (gItems[ai->itemTarget].obj.id == OBJ_ITEM_LASERS) && (ai->best || (SFAI_RandF(ai) < 0.5f))) {
+        // twin lasers have a hit box twice as wide: worth a detour
+        ai->mode = MODE_ITEM;
+        ai->wantBoost = true;
+        return;
+    }
     if ((ai->mode != MODE_ATTACK) && (ai->itemTarget >= 0) &&
         (ai->fleeing || (ai->mode == MODE_ITEM) || (SFAI_RandF(ai) < ai->p.greed * 0.35f) || (ai->target < 0))) {
         ai->mode = MODE_ITEM;
@@ -527,16 +609,23 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
         }
     }
 
-    // charged shot (it homes in and does four times the damage of a laser) from medium range
+    // charged shot: it homes in on a locked target. A direct hit does laser damage, its blast also
+    // hurts the other pilots close to the target. Lasers while the homing shot flies.
     {
         Vec3f fwd;
+        PlayerShot* homing = &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(me)];
+        bool slotFree = (homing->obj.status == SHOT_FREE) || (homing->obj.id != PLAYERSHOT_LOCK_ON);
+        f32 chance = sChargeUse[ai->level] * (0.5f + ai->p.charge);
 
         SFAI_Forward(self, &fwd);
-        if ((ai->maneuver == MANEUVER_NONE) && (ai->level >= 1) && (dist > 900.0f) && (dist < 7000.0f) &&
-            (ai->cooldown == 0) && (SFAI_AngleTo(&fwd, &d) < 30.0f) &&
-            (SFAI_RandF(ai) < (0.2f + ai->p.charge * 0.5f) * sManeuverSkill[ai->level] + 0.1f)) {
+        if (ai->best) {
+            // a direct hit only does laser damage (the target is then immune to the blast), but the
+            // blast hurts everybody else near it, and the homing reaches targets lasers can't
+            chance = SFAI_TargetHasCompany(ai->target, me) ? 1.0f : 0.0f;
+        }
+        if ((ai->maneuver == MANEUVER_NONE) && slotFree && (dist > 450.0f) && (dist < 9000.0f) &&
+            (ai->cooldown == 0) && (SFAI_AngleTo(&fwd, &d) < 75.0f) && (SFAI_RandF(ai) < chance)) {
             SFAI_StartManeuver(ai, MANEUVER_CHARGE);
-            ai->cooldown = 40;
         }
     }
 
@@ -546,7 +635,7 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
 
         SFAI_Forward(self, &fwd);
         if ((ai->maneuver == MANEUVER_NONE) && (ai->cooldown == 0) && (SFAI_AngleTo(&fwd, &d) > 120.0f) &&
-            (dist > 700.0f) && (SFAI_RandF(ai) < skill * (0.5f + ai->p.uturn))) {
+            (dist > 700.0f) && !guiding && (ai->best || (SFAI_RandF(ai) < skill * (0.5f + ai->p.uturn)))) {
             SFAI_StartManeuver(ai, MANEUVER_UTURN);
             ai->cooldown = 90;
         }
@@ -731,6 +820,9 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
     if (ai->cooldown > 0) {
         ai->cooldown--;
     }
+    if (ai->rollCooldown > 0) {
+        ai->rollCooldown--;
+    }
     if (ai->thinkTimer-- <= 0) {
         ai->thinkTimer = sReactionFrames[ai->level];
         SFAI_Decide(ai, playerNum);
@@ -803,6 +895,16 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
         buttons |= R_TRIG;
     }
 
+    // a barrel roll reflects lasers: skilled pilots roll when lasers come at them (also while charging)
+    if ((ai->reflexRoll == 0) && (ai->rollCooldown == 0) && (ai->maneuver != MANEUVER_LOOP) &&
+        (ai->maneuver != MANEUVER_UTURN) && (ai->maneuver != MANEUVER_ROLL) && (sRollReflex[ai->level] > 0.0f) &&
+        SFAI_IncomingFire(playerNum) &&
+        (ai->best || (SFAI_RandF(ai) < sRollReflex[ai->level] * (0.4f + 0.6f * ai->p.roll)))) {
+        ai->reflexRoll = 22;
+        ai->reflexDir = (SFAI_Rand(ai) & 1) ? 1 : -1;
+        ai->rollCooldown = 30;
+    }
+
     // special maneuvers override the normal flying
     switch (ai->maneuver) {
         case MANEUVER_ROLL:
@@ -841,14 +943,35 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
             break;
 
         case MANEUVER_CHARGE: {
-            // hold fire to charge and lock on, let go, then press again to fire the charged shot
-            // (or a smart bomb, which also homes in on a locked target)
+            // hold fire to charge: the ship then sends out lock-on searches along its nose. Once one
+            // finds the target, let go and press again to fire the homing shot (or a smart bomb, which
+            // also homes in on a locked target).
             bool locked = (ai->target >= 0) && (gVsLockOnTimers[ai->target][playerNum] != 0);
+            Vec3f tdir;
+            f32 tangle = 180.0f;
 
             ai->wantFire = false;
-            if ((ai->rollDir != 2) && (locked || (ai->maneuverFrame >= 50))) {
-                ai->rollDir = 2; // released
-                ai->maneuverFrame = 100;
+            if (ai->target >= 0) {
+                SFAI_Delta(&self->pos, &gPlayer[ai->target].pos, &tdir);
+                tangle = SFAI_AngleTo(&fwd, &tdir);
+            }
+            if (ai->rollDir != 2) {
+                if (locked) {
+                    ai->rollDir = 2; // let go, fire in two frames
+                    ai->maneuverFrame = 100;
+                } else if ((ai->maneuverFrame > sChargePatience[ai->level]) || (ai->target < 0) || (tangle > 110.0f) ||
+                           (ai->mode != MODE_ATTACK) || ((ai->level >= 3) && (ai->aimDist < 1100.0f))) {
+                    // (in laser range lasers do the same damage without waiting for a lock)
+                    // no lock: fire the charged shot anyway only when it points at a close target
+                    if ((ai->maneuverFrame > 21) && (tangle < 5.0f) && (ai->aimDist < 1500.0f)) {
+                        ai->rollDir = 2;
+                        ai->maneuverFrame = 100;
+                    } else {
+                        ai->maneuver = MANEUVER_NONE;
+                        ai->cooldown = SFAI_MAXF(ai->cooldown, 10);
+                        break;
+                    }
+                }
             }
             if (ai->maneuverFrame < 100) {
                 buttons |= A_BUTTON;
@@ -858,8 +981,14 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
                 } else {
                     buttons |= A_BUTTON;
                 }
+                if (sAIDebug) {
+                    printf("[SFAI] %d charged shot: locked %d target %d dist %.0f angle %.0f charge %d\n", playerNum + 1,
+                           locked, ai->target + 1, ai->aimDist, tangle, gChargeTimers[playerNum]);
+                    fflush(stdout);
+                }
             } else if (ai->maneuverFrame > 104) {
                 ai->maneuver = MANEUVER_NONE;
+                ai->cooldown = SFAI_MAXF(ai->cooldown, 6);
             }
             break;
         }
@@ -869,6 +998,16 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
     }
     if (ai->maneuver != MANEUVER_NONE) {
         ai->maneuverFrame++;
+    }
+    if (ai->reflexRoll > 0) {
+        // double tap Z or R
+        s32 f = 22 - ai->reflexRoll;
+
+        buttons &= ~(Z_TRIG | R_TRIG);
+        if ((f < 2) || ((f >= 4) && (f < 6))) {
+            buttons |= (ai->reflexDir < 0) ? Z_TRIG : R_TRIG;
+        }
+        ai->reflexRoll--;
     }
 
     if (ai->wantFire && (ai->maneuver != MANEUVER_CHARGE)) {
@@ -910,5 +1049,263 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
                playerNum + 1, ai->mode, ai->target + 1, ai->aimDist, ai->aimTime, yawErr, pitchWanted, pitchNow,
                self->pos.y, floorY, self->pathHeight, ai->wantFire, ai->maneuver, *stickX, *stickY, buttons);
         fflush(stdout);
+    }
+}
+
+const SFAIPersonality* SFAI_EffectivePersonality(int32_t index, int32_t level) {
+    if ((index == SFAI_BEST_INDEX) && (level >= 7)) {
+        return &sBestMax;
+    }
+    return SFAI_GetPersonality(index);
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Story dogfights: all-range actors (Star Wolf, enemy fighters, the team)
+ *
+ * The actor code flies towards a destination (fwork[4..6]) with a speed (fwork[1]) and a turn rate
+ * (fwork[3]) and shoots when iwork[0] is set. The AI sets those like it would move a stick: it leads
+ * its target, fires when its guns point where the target will be, and evades attacks with rolls,
+ * somersaults, U-turns and breaks. Skill changes reaction time, aim, lead, turn rate and how well it
+ * evades; the personality changes what it likes to do.
+ * ------------------------------------------------------------------------------------------------ */
+
+// actor lasers: 100 units per frame, 30 frames
+#define SFAI_ACTOR_SHOT_SPEED 100.0f
+#define SFAI_ACTOR_SHOT_LIFE 30.0f
+
+// clang-format off
+static const f32 sActorTurnRate[] = { 1.2f, 1.3f, 1.42f, 1.55f, 1.68f, 1.82f, 1.95f };
+static const s32 sActorFireGap[]  = { 14, 12, 10, 9, 7, 6, 5 };
+static const f32 sActorLead[]     = { 0.0f, 0.25f, 0.45f, 0.6f, 0.75f, 0.9f, 1.0f };
+static const f32 sActorNoise[]    = { 9.0f, 7.0f, 5.5f, 4.2f, 3.0f, 2.0f, 1.2f };
+// the original pilots weave around their target's position; skilled ones less
+static const f32 sActorWeave[]    = { 120.0f, 100.0f, 85.0f, 70.0f, 50.0f, 30.0f, 15.0f };
+// clang-format on
+
+typedef struct SFActorAIState {
+    s32 lastFrame;
+    s32 think;
+    f32 noiseYaw;
+    f32 noisePitch;
+    s32 fireTimer;
+    s32 evadeCooldown;
+    u32 rng;
+} SFActorAIState;
+
+static SFActorAIState sActorAI[ARRAY_COUNT(gActors)];
+
+static u32 SFAI_ActorRand(SFActorAIState* st) {
+    u32 x = st->rng;
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    st->rng = x;
+    return x;
+}
+
+static f32 SFAI_ActorRandF(SFActorAIState* st) {
+    return (SFAI_ActorRand(st) & 0xFFFFFF) / (f32) 0x1000000;
+}
+
+static void SFAI_ActorForward(Actor* a, Vec3f* out) {
+    f32 rx = a->obj.rot.x * M_DTOR;
+    f32 ry = a->obj.rot.y * M_DTOR;
+
+    out->x = sinf(ry) * cosf(rx);
+    out->y = -sinf(rx);
+    out->z = cosf(ry) * cosf(rx);
+}
+
+// Fox's lasers that will hit (what a pilot sees coming)
+static bool SFAI_ActorIncomingFire(Actor* a) {
+    s32 i;
+
+    for (i = 0; i < ARRAY_COUNT(gPlayerShots); i++) {
+        PlayerShot* shot = &gPlayerShots[i];
+        Vec3f d;
+        f32 dist;
+        f32 speed;
+
+        if ((shot->obj.status != SHOT_ACTIVE) || (shot->sourceId != 0) ||
+            ((shot->obj.id != PLAYERSHOT_SINGLE_LASER) && (shot->obj.id != PLAYERSHOT_TWIN_LASER))) {
+            continue;
+        }
+        d.x = a->obj.pos.x - shot->obj.pos.x;
+        d.y = a->obj.pos.y - shot->obj.pos.y;
+        d.z = a->obj.pos.z - shot->obj.pos.z;
+        dist = SFAI_Len(&d);
+        if ((dist > 1400.0f) || (dist < 1.0f)) {
+            continue;
+        }
+        speed = SFAI_Len(&shot->vel);
+        if ((speed > 1.0f) && (((shot->vel.x * d.x + shot->vel.y * d.y + shot->vel.z * d.z) / (speed * dist)) > 0.99f)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool evade, bool mayFire, SFAIActorOrder* order) {
+    Actor* a = (Actor*) actorPtr;
+    s32 idx = a - gActors;
+    SFActorAIState* st;
+    const SFAIPersonality* p;
+    s32 sk = (s32) SFAI_Clamp(level, 1, 7) - 1;
+    bool best;
+    Vec3f tpos;
+    Vec3f tvel;
+    Vec3f d;
+    Vec3f fwd;
+    Vec3f aim;
+    f32 dist;
+    f32 t;
+    f32 angle;
+    f32 allowed;
+
+    order->fire = false;
+    order->move = SFAI_MOVE_NONE;
+    if ((idx < 0) || (idx >= ARRAY_COUNT(gActors))) {
+        return;
+    }
+    st = &sActorAI[idx];
+    if ((st->lastFrame != gGameFrameCount) && (st->lastFrame != gGameFrameCount - 1)) {
+        // a new pilot (or one that wasn't flying a moment ago)
+        memset(st, 0, sizeof(*st));
+        st->rng = (u32) (idx * 2654435761u) ^ (u32) gGameFrameCount ^ 0x5bd1e995u;
+        st->rng |= 1;
+        st->evadeCooldown = 60;
+        sAIDebug = getenv("SFMOD_DEBUG_AI") != NULL;
+    }
+    st->lastFrame = gGameFrameCount;
+    if (personality < 0) {
+        personality = 0;
+    }
+    p = SFAI_EffectivePersonality(personality, sk + 1);
+    best = (personality == SFAI_BEST_INDEX) && (sk == 6);
+
+    // the target
+    if (a->aiIndex == AI360_FOX) {
+        if ((gPlayer[0].state != PLAYERSTATE_ACTIVE) && (gPlayer[0].state != PLAYERSTATE_U_TURN)) {
+            return;
+        }
+        tpos.x = gPlayer[0].pos.x;
+        tpos.y = gPlayer[0].pos.y;
+        tpos.z = gPlayer[0].trueZpos;
+        tvel = gPlayer[0].vel;
+    } else if ((a->aiIndex > 0) && (a->aiIndex < ARRAY_COUNT(gActors)) &&
+               (gActors[a->aiIndex].obj.status == OBJ_ACTIVE)) {
+        tpos = gActors[a->aiIndex].obj.pos;
+        tvel = gActors[a->aiIndex].vel;
+    } else {
+        return;
+    }
+
+    if (st->fireTimer > 0) {
+        st->fireTimer--;
+    }
+    if (st->evadeCooldown > 0) {
+        st->evadeCooldown--;
+    }
+    if (st->think-- <= 0) {
+        st->think = sReactionFrames[sk];
+        st->noiseYaw = (SFAI_ActorRandF(st) - 0.5f) * 2.0f * sActorNoise[sk];
+        st->noisePitch = (SFAI_ActorRandF(st) - 0.5f) * 2.0f * sActorNoise[sk];
+    }
+
+    // lead the target like a pilot who knows where it will be when the laser gets there
+    d.x = tpos.x - a->obj.pos.x;
+    d.y = tpos.y - a->obj.pos.y;
+    d.z = tpos.z - a->obj.pos.z;
+    dist = SFAI_Len(&d);
+    t = SFAI_InterceptTime(&d, &tvel, SFAI_ACTOR_SHOT_SPEED);
+    if (t <= 0.0f) {
+        t = dist / SFAI_ACTOR_SHOT_SPEED;
+    }
+    t = SFAI_MINF(t, 45.0f);
+    aim.x = d.x + tvel.x * t * sActorLead[sk] + SIN_DEG((idx * 45) + gGameFrameCount) * sActorWeave[sk];
+    aim.y = d.y + tvel.y * t * sActorLead[sk] + COS_DEG((idx * 45) + (gGameFrameCount * 2)) * sActorWeave[sk];
+    aim.z = d.z + tvel.z * t * sActorLead[sk] + SIN_DEG((idx * 45) + gGameFrameCount) * sActorWeave[sk];
+    {
+        // aim error of this decision: turn the aim direction a little
+        f32 cy = cosf(st->noiseYaw * M_DTOR);
+        f32 sy = sinf(st->noiseYaw * M_DTOR);
+        f32 x = aim.x * cy + aim.z * sy;
+        f32 z = -aim.x * sy + aim.z * cy;
+
+        aim.x = x;
+        aim.z = z;
+        aim.y += SFAI_Len(&aim) * sinf(st->noisePitch * M_DTOR);
+    }
+    a->fwork[4] = a->obj.pos.x + aim.x;
+    a->fwork[5] = a->obj.pos.y + aim.y;
+    a->fwork[6] = a->obj.pos.z + aim.z;
+
+    // turns like a good pilot (never worse than the original)
+    a->fwork[3] = SFAI_MAXF(a->fwork[3], sActorTurnRate[sk]);
+
+    SFAI_ActorForward(a, &fwd);
+    angle = SFAI_AngleTo(&fwd, &aim);
+
+    // speed: close in on a target far ahead
+    if ((sk >= 3) && (dist > 2200.0f) && (angle < 50.0f)) {
+        a->fwork[1] = SFAI_MAXF(a->fwork[1], 50.0f + 12.0f * p->boost);
+    }
+
+    // shoot when the guns point at where the target will be
+    allowed = atan2f(40.0f + 100.0f * p->aggression, SFAI_MAXF(dist, 1.0f)) * M_RTOD + (6 - sk) * 0.8f;
+    if (mayFire && (st->fireTimer == 0) && (t < SFAI_ACTOR_SHOT_LIFE * 0.95f) && (angle < allowed)) {
+        order->fire = true;
+        st->fireTimer = sActorFireGap[sk];
+    }
+
+    // evade Fox: lasers coming in, or Fox behind and aiming
+    if (evade && (st->evadeCooldown == 0) && (gPlayer[0].state == PLAYERSTATE_ACTIVE)) {
+        Vec3f toFox;
+        Vec3f foxFwd;
+        Vec3f back;
+        f32 foxDist;
+        bool incoming = (sk >= 2) && SFAI_ActorIncomingFire(a);
+        bool chased;
+
+        toFox.x = gPlayer[0].pos.x - a->obj.pos.x;
+        toFox.y = gPlayer[0].pos.y - a->obj.pos.y;
+        toFox.z = gPlayer[0].trueZpos - a->obj.pos.z;
+        foxDist = SFAI_Len(&toFox);
+        back.x = -toFox.x;
+        back.y = -toFox.y;
+        back.z = -toFox.z;
+        foxFwd = gPlayer[0].vel;
+        chased = (foxDist < sAwareness[sk]) && ((fwd.x * toFox.x + fwd.y * toFox.y + fwd.z * toFox.z) < 0.0f) &&
+                 (SFAI_Len(&foxFwd) > 1.0f) && (SFAI_AngleTo(&foxFwd, &back) < 20.0f);
+
+        if (incoming || chased) {
+            f32 chance = sManeuverSkill[sk] * (0.15f + 0.45f * p->caution);
+
+            if (sAIDebug) {
+                printf("[SFAI] actor %d (ai %d) threatened: incoming %d chased %d dist %.0f\n", idx, a->aiType, incoming,
+                       chased, foxDist);
+                fflush(stdout);
+            }
+
+            if (best) {
+                chance = 1.0f;
+            }
+            if (SFAI_ActorRandF(st) < chance) {
+                if (incoming && (best || (SFAI_ActorRandF(st) < 0.3f + 0.7f * p->roll))) {
+                    order->move = SFAI_MOVE_ROLL;
+                } else if (chased && (foxDist < 1500.0f) &&
+                           (best || (SFAI_ActorRandF(st) < p->loop / (p->loop + p->uturn + 0.3f)))) {
+                    order->move = SFAI_MOVE_LOOP;
+                } else if (chased && (best || (SFAI_ActorRandF(st) < p->uturn))) {
+                    order->move = SFAI_MOVE_UTURN;
+                } else {
+                    order->move = SFAI_MOVE_BREAK;
+                }
+                st->evadeCooldown = 70 + (s32) ((1.0f - sManeuverSkill[sk]) * 140.0f);
+            } else {
+                st->evadeCooldown = sReactionFrames[sk];
+            }
+        }
     }
 }

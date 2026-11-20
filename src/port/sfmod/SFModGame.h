@@ -84,6 +84,8 @@ void SFModGame_OnEnemyLaser(int32_t objId, float xPos, float yPos, float zPos, f
 void SFModGame_Update(void); // once per game frame while playing
 void SFModGame_AdjustAllRange(void* actor, float* fireChance, uint8_t* fireMask, float* fireRange);
 bool SFModGame_ActorHasTwinLaser(void* actor);
+// new AI for a chasing all-range actor: true when it flies this actor (fire 0/1, move SFAIActorMove)
+bool SFModGame_StoryAI(void* actor, bool fighting, int32_t* fire, int32_t* move);
 
 #ifdef __cplusplus
 }

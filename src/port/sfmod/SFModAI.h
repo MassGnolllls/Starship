@@ -37,6 +37,33 @@ int32_t SFAI_GetPersonalityIndex(int32_t playerNum);
 // hold/press receive the button bits, stickX/stickY the stick (-60..60 like the game's processed stick).
 void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stickY);
 
+// "BEST": an all-rounder that plays as strong as it can on level 7
+#define SFAI_PERSONALITY_BEST 8
+// the personality's values on a level (BEST changes on level 7)
+const SFAIPersonality* SFAI_EffectivePersonality(int32_t index, int32_t level);
+
+/*
+ * Story dogfights: the same way of thinking for the all-range pilots of the levels (Star Wolf, enemy
+ * fighters, the team). They are actors, not players, so the AI decides where the actor flies (its
+ * destination, speed and turn rate), when it shoots and when it evades, and the actor code flies.
+ */
+typedef enum SFAIActorMove {
+    SFAI_MOVE_NONE,
+    SFAI_MOVE_LOOP,  // somersault
+    SFAI_MOVE_UTURN,
+    SFAI_MOVE_BREAK, // hard turn to the side
+    SFAI_MOVE_ROLL,  // barrel roll (lasers bounce off)
+} SFAIActorMove;
+
+typedef struct SFAIActorOrder {
+    bool fire;
+    int32_t move; // SFAIActorMove
+} SFAIActorOrder;
+
+// actor: an all-range Actor that chases its target (aiIndex). level 1..7, personality index or -1.
+// evade: may evade Fox's attacks (enemies). mayFire: the fight is on.
+void SFAI_ActorThink(void* actor, int32_t level, int32_t personality, bool evade, bool mayFire, SFAIActorOrder* order);
+
 #ifdef __cplusplus
 }
 #endif

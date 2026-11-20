@@ -732,15 +732,80 @@ static void SFModVs_EndMatch(void) {
 }
 
 static void SFModVs_DebugLog(void) {
+    static bool sShotWasActive[ARRAY_COUNT(gPlayerShots)];
+    static s32 sPrevHitTimer[MAX_PLAYERS];
+    static s32 sShots[MAX_PLAYERS];
+    static s32 sHits[MAX_PLAYERS];
+    static s32 sCharged[MAX_PLAYERS];
+    static s32 sBigHits[MAX_PLAYERS];
     s32 i;
 
-    if (!sDebug || ((gGameFrameCount % 150) != 0)) {
+    if (!sDebug) {
+        return;
+    }
+    // shots fired and hits landed per pilot (lasers and charged shots)
+    for (i = 0; i < ARRAY_COUNT(gPlayerShots); i++) {
+        PlayerShot* shot = &gPlayerShots[i];
+        bool active = (shot->obj.status == SHOT_ACTIVE) &&
+                      ((shot->obj.id == PLAYERSHOT_SINGLE_LASER) || (shot->obj.id == PLAYERSHOT_TWIN_LASER) ||
+                       (shot->obj.id == PLAYERSHOT_LOCK_ON));
+
+        if (active && !sShotWasActive[i] && (shot->sourceId >= 0) && (shot->sourceId < gCamCount)) {
+            if (shot->obj.id == PLAYERSHOT_LOCK_ON) {
+                sCharged[shot->sourceId]++;
+            } else {
+                sShots[shot->sourceId]++;
+            }
+        }
+        sShotWasActive[i] = active;
+    }
+    for (i = 0; i < gCamCount; i++) {
+        s32 attacker = gPlayer[i].attacker - 1;
+
+        if ((gPlayer[i].hitTimer > sPrevHitTimer[i]) && (attacker >= 0) && (attacker < gCamCount) && (attacker != i)) {
+            if (gPlayer[i].dmgType >= 40) {
+                sBigHits[attacker]++;
+                printf("[SFVS] big hit: %d hit %d (damage %d)\n", attacker + 1, i + 1, gPlayer[i].dmgType);
+            } else {
+                sHits[attacker]++;
+            }
+        }
+        sPrevHitTimer[i] = gPlayer[i].hitTimer;
+    }
+
+    // what happens to the homing shots
+    {
+        static s32 sHomingState[MAX_PLAYERS]; // 0 none, 1 homing, 2 lost its lock
+        static s32 sHomingAge[MAX_PLAYERS];
+
+        for (i = 0; i < gCamCount; i++) {
+            PlayerShot* shot = &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(i)];
+            bool active = (shot->obj.status == SHOT_ACTIVE) && (shot->obj.id == PLAYERSHOT_LOCK_ON);
+
+            if (active && (sHomingState[i] == 0)) {
+                sHomingState[i] = (shot->unk_60 == 0) ? 1 : 2;
+                sHomingAge[i] = 0;
+            } else if (active) {
+                sHomingAge[i]++;
+                if ((sHomingState[i] == 1) && (shot->unk_60 != 0)) {
+                    printf("[SFVS] homing shot of %d lost its lock after %d frames\n", i + 1, sHomingAge[i]);
+                    sHomingState[i] = 2;
+                }
+            } else if (sHomingState[i] != 0) {
+                printf("[SFVS] homing shot of %d ended after %d frames (%s)\n", i + 1, sHomingAge[i],
+                       (sHomingState[i] == 1) ? "homing" : "unlocked");
+                sHomingState[i] = 0;
+            }
+        }
+    }
+
+    if ((gGameFrameCount % 150) != 0) {
         return;
     }
     printf("[SFVS] frame %d time %d:", gGameFrameCount, sTimeLeft / 30);
     for (i = 0; i < gCamCount; i++) {
-        printf(" %s(st%d sh%d k%d d%d)", SFModVs_PilotName(i), gPlayer[i].state, gPlayer[i].shields, sKills[i],
-               sDeaths[i]);
+        printf(" %s(sh%d k%d d%d s%d h%d c%d H%d)", SFModVs_PilotName(i), gPlayer[i].shields, sKills[i], sDeaths[i],
+               sShots[i], sHits[i], sCharged[i], sBigHits[i]);
     }
     printf("\n");
     fflush(stdout);
@@ -1788,8 +1853,21 @@ bool SFModVs_TestBoot(void) {
     }
     gSFVs.teams = getenv("SFMOD_TEST_VS_TEAMS") != NULL;
     if ((v = getenv("SFMOD_TEST_VS_LEVEL")) != NULL) {
+        // one level for all, or a list: "7,7,3,3"
         for (i = 0; i < MAX_PLAYERS; i++) {
             gSFVs.pilots[i].level = CLAMP(atoi(v), 1, 7);
+            if (strchr(v, ',') != NULL) {
+                v = strchr(v, ',') + 1;
+            }
+        }
+    }
+    if ((v = getenv("SFMOD_TEST_VS_PERS")) != NULL) {
+        // personality index for all, or a list ("8,0,1,2"); -1 = random
+        for (i = 0; i < MAX_PLAYERS; i++) {
+            gSFVs.pilots[i].personality = CLAMP(atoi(v), -1, SFAI_PersonalityCount() - 1);
+            if (strchr(v, ',') != NULL) {
+                v = strchr(v, ',') + 1;
+            }
         }
     }
     SFModVs_PrepareMatch();

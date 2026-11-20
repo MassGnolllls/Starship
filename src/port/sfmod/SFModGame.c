@@ -29,6 +29,7 @@ extern void Option_SFMod_StartLevel(s32 level);
 extern void func_effect_8007E6B8(Effect* this, u32 objId, f32 xPos, f32 yPos, f32 zPos, f32 speed);
 
 SFRunState gSFRun;
+static bool sStoryAIDebug = false;
 
 static const char* sDifficultyNames[7] = {
     "EASIEST", "VERY EASY", "EASY", "MEDIUM", "HARD", "VERY HARD", "HARDEST",
@@ -115,6 +116,7 @@ static void SFModGame_NewPlaythrough(void) {
         printf("\n");
     }
     gSFRun.active = true;
+    sStoryAIDebug = getenv("SFMOD_DEBUG_STORYAI") != NULL;
     printf("[SFGame] new %s, difficulty %d, expert %d\n", sModeNames[gSFRun.mode], gSFRun.difficulty, gSFRun.expert);
     fflush(stdout);
 }
@@ -535,6 +537,11 @@ void SFModGame_Update(void) {
         return;
     }
     SFModGame_UpdateRules();
+    if (sStoryAIDebug && ((gGameFrameCount % 300) == 0)) {
+        printf("[SFGame] frame %d: Fox shields %d lives %d state %d\n", gGameFrameCount, gPlayer[0].shields,
+               gLifeCount[0], gPlayer[0].state);
+        fflush(stdout);
+    }
     for (i = 0; i < SFGAME_ACTORS; i++) {
         Actor* a = &gActors[i];
 
@@ -552,6 +559,71 @@ void SFModGame_Update(void) {
             SFModGame_UpdatePowerUps(i);
         }
     }
+}
+
+// The new AI in the dogfights: Star Wolf and the enemy fighters on the chosen level, the team as
+// decent wingmen. Difficulty 1 keeps the original AI.
+bool SFModGame_StoryAI(void* actorPtr, bool fighting, int32_t* fire, int32_t* move) {
+    Actor* a = (Actor*) actorPtr;
+    s32 level = SFModGame_Difficulty();
+    s32 skill;
+    s32 personality = 0;
+    bool evade;
+    SFAIActorOrder order;
+
+    *fire = 0;
+    *move = SFAI_MOVE_NONE;
+    if (!gSFRun.active || gVersusMode || (level <= 1) || (a->obj.id != OBJ_ACTOR_ALLRANGE)) {
+        return false;
+    }
+    if ((a->aiType == AI360_FOX) || (a->aiType >= AI360_GREAT_FOX)) {
+        return false; // missiles, the Great Fox, event handlers
+    }
+    if (a->aiIndex == AI360_FOX) {
+        // chasing Fox
+    } else if ((a->aiIndex <= 0) || (a->aiIndex >= SFGAME_ACTORS) || (a->aiIndex == AI360_GREAT_FOX) ||
+               (gActors[a->aiIndex].obj.status != OBJ_ACTIVE) || (gActors[a->aiIndex].obj.id != OBJ_ACTOR_ALLRANGE) ||
+               (gActors[a->aiIndex].aiType == AI360_MISSILE)) {
+        return false; // Sector Z missiles and other special targets keep the original behavior
+    }
+
+    if (SFModGame_IsStarWolf(a->aiType)) {
+        skill = level;
+        evade = true;
+        personality = gSFRun.personality[SFModGame_RunCharacter(a->aiType)];
+    } else if (SFModGame_IsAlly(a->aiType)) {
+        // the team flies well, whatever the level
+        skill = 4;
+        evade = false;
+        personality = gSFRun.personality[SFModGame_RunCharacter(a->aiType)];
+    } else {
+        skill = level;
+        evade = level >= 4;
+    }
+    SFAI_ActorThink(a, skill, personality, evade, fighting, &order);
+    *fire = order.fire ? 1 : 0;
+    *move = order.move;
+
+    if (sStoryAIDebug) {
+        static s32 sShots;
+        static s32 sMoves[5];
+        static s32 sFrames;
+        static s32 sLastFrame;
+
+        sShots += *fire;
+        sMoves[CLAMP(*move, 0, 4)]++;
+        if (gGameFrameCount != sLastFrame) {
+            sLastFrame = gGameFrameCount;
+            if (++sFrames >= 300) {
+                printf("[SFGame] story AI (level %d): %d shots, moves loop %d uturn %d break %d roll %d, Fox shields %d\n",
+                       level, sShots, sMoves[1], sMoves[2], sMoves[3], sMoves[4], gPlayer[0].shields);
+                fflush(stdout);
+                sFrames = sShots = 0;
+                memset(sMoves, 0, sizeof(sMoves));
+            }
+        }
+    }
+    return true;
 }
 
 // Strength of the dogfight AI (ActorAllRange) and the personalities of the named pilots
