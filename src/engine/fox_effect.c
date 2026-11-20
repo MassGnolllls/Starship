@@ -4,6 +4,7 @@
  * Description: Effect Draw routines
  */
 
+#include "port/sfmod/SFModGame.h"
 #include "global.h"
 #include "assets/ast_blue_marine.h"
 #include "assets/ast_arwing.h"
@@ -2650,6 +2651,7 @@ void Effect_EnemyLaser(ObjectId objId, f32 xPos, f32 yPos, f32 zPos, f32 speed) 
                 Matrix_Push(&gCalcMatrix);
                 func_effect_8007E6B8(&gEffects[i], objId, xPos, yPos, zPos, speed);
                 Matrix_Pop(&gCalcMatrix);
+                SFModGame_OnEnemyLaser(objId, xPos, yPos, zPos, speed); // @mod: more lasers on higher levels
                 break;
             }
         }

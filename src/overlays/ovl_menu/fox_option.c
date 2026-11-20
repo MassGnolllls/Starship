@@ -6,6 +6,10 @@
 
 #include "port/sfmod/SFMod.h"
 #include "port/sfmod/SFModVs.h"
+#include "port/sfmod/SFModGame.h"
+
+// @mod: the setup screen of the main game (mode, difficulty, expert mode, mission practice)
+#define OPTION_SFMOD_NEW_GAME 210
 #include "mods.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
@@ -436,6 +440,7 @@ void Option_Setup(void) {
     D_menu_801B917C = 0;
 
     sMenuEntryState = OPTION_MAIN_MENU;
+    SFModGame_OnMenuEntered(); // @mod: a playthrough ends in the main menu
 
     if ((gLastGameState == GSTATE_GAME_OVER) || (gLastGameState == GSTATE_ENDING)) {
         if (gLastGameState == GSTATE_ENDING) {
@@ -464,7 +469,8 @@ void Option_Setup(void) {
 
         Title_GetRankTotalHits();
 
-        sRankInPos = Option_RankInPos_Check();
+        // @mod: the gauntlet and mission practice don't go into the ranking
+        sRankInPos = SFModGame_EndedRunIsRanked() ? Option_RankInPos_Check() : -1;
 
         if (sRankInPos != -1) {
             sMenuEntryState = OPTION_NAME_ENTRY;
@@ -506,6 +512,40 @@ void Option_Setup(void) {
         sMenuEntryState = OPTION_VERSUS;
     } else {
         sMenuEntryState = OPTION_MAIN_MENU;
+    }
+
+    if (SFModGame_TakeReturnToSetup()) {
+        // @mod: back from mission practice or the gauntlet: the setup screen again, with the "Main Game" card
+        // chosen like after selecting it in the main menu
+        sMainMenuCursor = OPTION_MAP;
+        for (i = 0; i < ARRAY_COUNT(sOptionCardList); i++) {
+            if (i == OPTION_MAP) {
+                continue;
+            }
+            sOptionCardList[i].frame.xScale = 0.01f;
+            sOptionCardList[i].frame.yScale = 0.21f;
+            sOptionCardList[i].frame.y = sOptionCardPosY[i];
+            sOptionCardList[i].frame.x = 0.0f;
+            sOptionCardList[i].frame.z = 0.0f;
+            sOptionCardList[i].drawFrame = false;
+            sOptionCardList[i].tex.xScale = 0.01f;
+            sOptionCardList[i].tex.yScale = 1.0f;
+            sOptionCardList[i].tex.xPos = 158.0f;
+            sOptionCardList[i].tex.yPos = sOptionCardCurTextPosY[i];
+            sOptionCardList[i].drawTex = false;
+        }
+        sOptionCardList[OPTION_MAP].frame.x = 0.0f;
+        sOptionCardList[OPTION_MAP].frame.z = 0.0f;
+        sOptionCardList[OPTION_MAP].frame.y = 120.0f;
+        sOptionCardList[OPTION_MAP].frame.xScale = 0.4f;
+        sOptionCardList[OPTION_MAP].frame.yScale = 0.21f;
+        sOptionCardList[OPTION_MAP].drawFrame = true;
+        sOptionCardList[OPTION_MAP].tex.xScale = 1.0f;
+        sOptionCardList[OPTION_MAP].tex.yScale = 1.0f;
+        sOptionCardList[OPTION_MAP].tex.xPos = sOptionCardCurTextPosX[OPTION_MAP];
+        sOptionCardList[OPTION_MAP].tex.yPos = 0.0f;
+        sOptionCardList[OPTION_MAP].drawTex = true;
+        sMenuEntryState = OPTION_SFMOD_NEW_GAME;
     }
 
     sMainMenuState = 0;
@@ -603,6 +643,10 @@ void Option_Entry_Update(void) {
             SFModVs_MenuUpdate(); // @mod: was Option_Versus_Update()
             break;
 
+        case OPTION_SFMOD_NEW_GAME: // @mod
+            SFModGame_MenuUpdate();
+            break;
+
         case OPTION_RANKING:
             Option_Ranking_Update();
             break;
@@ -658,6 +702,10 @@ void Option_Entry_Draw(void) {
             SFModVs_MenuDraw(); // @mod: was Option_Versus_Draw()
             break;
 
+        case OPTION_SFMOD_NEW_GAME: // @mod
+            SFModGame_MenuDraw();
+            break;
+
         case OPTION_RANKING:
             Option_Ranking_Draw();
             break;
@@ -711,6 +759,45 @@ void Option_SFMod_ReturnToMainMenu(void) {
     sMenuEntryState = OPTION_MAIN_MENU;
     gDrawMode = DRAW_NONE;
     sMainMenuFromCancel = true;
+}
+
+void Option_SFMod_StartMainGame(void) {
+    // continue like the original "Main Game" card: fade out and open the map
+    sMenuEntryState = OPTION_MAP;
+}
+
+void Option_SFMod_StartLevel(s32 level) {
+    // straight into a level, set up like a new game (gauntlet, mission practice)
+    s32 i;
+
+    gClearPlayerInfo = true;
+    gNextLevel = level;
+    gNextLevelPhase = 0;
+    gNextGameState = GSTATE_PLAY;
+    gNextGameStateTimer = 2;
+    gPlayState = PLAY_STANDBY;
+    gDrawMode = DRAW_NONE;
+    gOptionMenuStatus = OPTION_WAIT;
+    gSavedObjectLoadIndex = 0;
+    gSavedPathProgress = 0.0f;
+    D_ctx_8017782C = true;
+    gHitCount = 0;
+    gTotalHits = 0;
+    gMissionNumber = 0;
+    // the mission tables like at the start of the story (see Map_Setup_Menu)
+    for (i = 0; i < ARRAY_COUNT(gMissionMedal); i++) {
+        gMissionMedal[i] = 0;
+        gMissionHitCount[i] = 0;
+        gMissionTeamStatus[i] = 0x00FFFFFF;
+        gMissionPlanet[i] = PLANET_NONE;
+    }
+    gMissionPlanet[0] = PLANET_CORNERIA;
+    gMissionPlanet[6] = PLANET_VENOM;
+    for (i = 0; i < ARRAY_COUNT(gLeveLClearStatus); i++) {
+        gLeveLClearStatus[i] = 0;
+    }
+    gControllerLock = 3;
+    SEQCMD_STOP_SEQUENCE(SEQ_PLAYER_BGM, 1);
 }
 
 void Option_SFMod_StartVersus(void) {
@@ -1060,6 +1147,9 @@ void Option_MainMenu_Update(void) {
                     (sOptionCardList[sMainMenuCursor].frame.y == var_fs1)) {
                     gBlurAlpha += 255;
                     sMenuEntryState = sMainMenuCursor;
+                    if (sMenuEntryState == OPTION_MAP) { // @mod: setup screen before the game starts
+                        sMenuEntryState = OPTION_SFMOD_NEW_GAME;
+                    }
 
                     if ((sMainMenuCursor == OPTION_SOUND) && sExpertSoundCursor) {
                         sMenuEntryState = OPTION_EXPERT_SOUND;

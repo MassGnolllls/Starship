@@ -1,3 +1,4 @@
+#include "port/sfmod/SFModGame.h"
 #include "port/sfmod/SFModVs.h"
 #include "port/sfmod/SFMod.h"
 #include "global.h"
@@ -696,6 +697,7 @@ void PlayerShot_ApplyDamageToActor(PlayerShot* shot, Actor* actor, s32 hitIndex)
             actor->lockOnTimers[shot->sourceId] = 0;
         }
     }
+    actor->damage = SFModGame_ScaleActorDamage(actor, shot->sourceId, actor->damage); // @mod: difficulty
     actor->dmgSource = shot->sourceId + 1;
     actor->hitPos.x = shot->obj.pos.x;
     actor->hitPos.y = shot->obj.pos.y;
@@ -1033,6 +1035,7 @@ void PlayerShot_CollisionCheck(PlayerShot* shot) {
                                 }
                             }
                         }
+                        boss->damage = SFModGame_ScaleBossDamage(boss->damage); // @mod: difficulty
                         if (boss->obj.id == OBJ_BOSS_SY_SHOGUN) {
                             boss->swork[19] = shot->sourceId;
                         }
@@ -1884,7 +1887,7 @@ void PlayerShot_CheckBossHitbox(PlayerShot* shot) {
                         if (VEC3F_MAG(&test) < var_fs2) {
                             boss->dmgPart = j;
                             boss->dmgType = DMG_BOMB;
-                            boss->damage = 20;
+                            boss->damage = SFModGame_ScaleBossDamage(20); // @mod: difficulty
                         }
                     }
                 }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include "SFMod.h"
 #include "SFModVs.h"
+#include "SFModGame.h"
 #include "global.h"
 #include "fox_map.h"
 #include "port/hooks/Events.h"
@@ -321,6 +322,7 @@ void SFMod_DrawSwapMessage(void) {
 
 static void SFMod_OnHudDrawPost(IEvent* event) {
     SFMod_DrawSwapMessage();
+    SFModGame_DrawHud();
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -367,8 +369,10 @@ static void SFMod_OnGameUpdatePost(IEvent* event) {
         sDebugLast[i] = now[i];
     }
     if (changed) {
-        printf("[SFMod] frame %d: gameState=%d playState=%d playerState=%d level=%d laser=%d mapState=%d ff=%d\n",
-               sDebugFrames, now[0], now[1], now[2], now[3], now[4], now[5], sFastForward);
+        printf("[SFMod] frame %d: gameState=%d playState=%d playerState=%d level=%d laser=%d mapState=%d ff=%d "
+               "phase=%d mode=%d lives=%d bombs=%d\n",
+               sDebugFrames, now[0], now[1], now[2], now[3], now[4], now[5], sFastForward, gLevelPhase, gLevelMode,
+               gLifeCount[0], gBombCount[0]);
         fflush(stdout);
     }
 
@@ -399,6 +403,13 @@ bool SFMod_TestBoot(void) {
 
     if (!sDone && SFModVs_TestBoot()) {
         sDone = true;
+        return true;
+    }
+    if (!sDone && SFModGame_TestBoot()) {
+        sDone = true;
+        if (laser != NULL) {
+            sTestLaser = atoi(laser);
+        }
         return true;
     }
 
@@ -437,7 +448,16 @@ bool SFMod_TestBoot(void) {
     return true;
 }
 
+extern void Venom1_80198414(void); // fox_ve1.c: end of Venom 1
+
+static s32 sTestKillAfter = -1;
+static s32 sTestGreatFoxHitAfter = -1;
+
 static void SFMod_TestUpdate(void) {
+    static s32 sTestLevel = -1;
+    static s32 sTestPhase = -1;
+    static s32 sTestLives = -1;
+
     if ((gGameState != GSTATE_PLAY) || (gPlayState != PLAY_UPDATE) || (gPlayer == NULL)) {
         return;
     }
@@ -446,29 +466,62 @@ static void SFMod_TestUpdate(void) {
         gLaserStrength[0] = sTestLaser;
         sTestLaser = -1;
     }
-    if (sTestCompleteAfter < 0) {
+    if ((sTestCompleteAfter < 0) && (sTestKillAfter < 0) && (sTestGreatFoxHitAfter < 0)) {
         return;
     }
-    if (gPlayer[0].state == PLAYERSTATE_ACTIVE) {
-        sTestActiveFrames++;
-        if (sTestActiveFrames == sTestCompleteAfter) {
-            printf("[SFMod] test: completing level %d\n", gCurrentLevel);
-            fflush(stdout);
-            gMissionStatus = MISSION_ACCOMPLISHED;
-            if (gCurrentLevel == LEVEL_FORTUNA) {
-                gMissionStatus = MISSION_COMPLETE;
-                gAllRangeEventTimer = 9200;
-            } else {
-                gPlayer[0].state = PLAYERSTATE_LEVEL_COMPLETE;
-            }
-        }
-    } else if (gPlayer[0].state == PLAYERSTATE_LEVEL_INTRO) {
+    // count again for every level, every phase and every try
+    if ((gCurrentLevel != sTestLevel) || (gLevelPhase != sTestPhase) || (gLifeCount[0] != sTestLives) ||
+        (gPlayer[0].state == PLAYERSTATE_LEVEL_INTRO)) {
+        sTestLevel = gCurrentLevel;
+        sTestPhase = gLevelPhase;
+        sTestLives = gLifeCount[0];
         sTestActiveFrames = 0;
+    }
+    if (gPlayer[0].state != PLAYERSTATE_ACTIVE) {
+        return;
+    }
+    sTestActiveFrames++;
+    if (sTestActiveFrames == sTestGreatFoxHitAfter) {
+        printf("[SFMod] test: a missile hits the Great Fox\n");
+        fflush(stdout);
+        gGreatFoxIntact = false;
+    }
+    if (sTestActiveFrames == sTestKillAfter) {
+        printf("[SFMod] test: shooting the player down (lives %d)\n", gLifeCount[0]);
+        fflush(stdout);
+        gPlayer[0].shields = 0;
+        Player_ApplyDamage(&gPlayer[0], 0, 10);
+    }
+    if (sTestActiveFrames == sTestCompleteAfter) {
+        printf("[SFMod] test: completing level %d phase %d\n", gCurrentLevel, gLevelPhase);
+        fflush(stdout);
+        gMissionStatus = MISSION_ACCOMPLISHED;
+        if (gCurrentLevel == LEVEL_FORTUNA) {
+            gMissionStatus = MISSION_COMPLETE;
+            gAllRangeEventTimer = 9200;
+        } else if (gCurrentLevel == LEVEL_VENOM_1) {
+            Venom1_80198414(); // like the end of the boss
+        } else {
+            if (gCurrentLevel == LEVEL_VENOM_2) {
+                gLeveLClearStatus[LEVEL_VENOM_2] = 2; // like a defeated Star Wolf
+            }
+            gPlayer[0].state = PLAYERSTATE_LEVEL_COMPLETE;
+            gPlayer[0].csState = 0;
+        }
     }
 }
 
 void SFMod_Init(void) {
     const char* completeAfter = getenv("SFMOD_TEST_COMPLETE_AFTER");
+    const char* killAfter = getenv("SFMOD_TEST_KILL_AFTER");
+    const char* greatFoxHitAfter = getenv("SFMOD_TEST_GREATFOX_HIT_AFTER");
+
+    if (killAfter != NULL) {
+        sTestKillAfter = atoi(killAfter);
+    }
+    if (greatFoxHitAfter != NULL) {
+        sTestGreatFoxHitAfter = atoi(greatFoxHitAfter);
+    }
 
     sDebug = getenv("SFMOD_DEBUG") != NULL;
     if (completeAfter != NULL) {

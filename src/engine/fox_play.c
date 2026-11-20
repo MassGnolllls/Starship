@@ -1,3 +1,4 @@
+#include "port/sfmod/SFModGame.h"
 #include "port/sfmod/SFMod.h"
 #include "port/sfmod/SFModVs.h"
 #include "prevent_bss_reordering.h"
@@ -7051,6 +7052,7 @@ void Play_Update(void) {
     }
 
     Object_Update();
+    SFModGame_Update(); // @mod: difficulty effects of the main game
     PlayerShot_UpdateAll();
     BonusText_Update();
 
@@ -7224,6 +7226,9 @@ void Play_Main(void) {
 
         case PLAY_PAUSE:
             if (!gVersusMode) {
+                if (gPlayer[0].state != PLAYERSTATE_STANDBY) {
+                    SFModGame_PauseUpdate(); // @mod: Z ends a practice mission or the gauntlet
+                }
                 if ((gControllerPress[gMainController].button & R_TRIG) && (gPlayer[0].form != FORM_BLUE_MARINE) &&
                     (gPlayer[0].state != PLAYERSTATE_STANDBY)) {
                     if (gShowReticles[0] = 1 - gShowReticles[0]) {

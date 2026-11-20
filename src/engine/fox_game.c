@@ -1,5 +1,6 @@
 #include "port/sfmod/SFMod.h"
 #include "port/sfmod/SFModVs.h"
+#include "port/sfmod/SFModGame.h"
 #include "prevent_bss_reordering.h"
 #include "global.h"
 #include "sf64dma.h"
@@ -92,6 +93,7 @@ void Game_SetGameState(void) {
     if (gNextGameState == GSTATE_NONE) {
         return;
     }
+    SFModGame_OnNextGameState(); // @mod: gauntlet, mission practice, red route to Venom
 
     switch (gNextGameState) {
         case GSTATE_PLAY:

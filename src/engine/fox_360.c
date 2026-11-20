@@ -1,3 +1,4 @@
+#include "port/sfmod/SFModGame.h"
 #include "global.h"
 #include "assets/ast_katina.h"
 #include "assets/ast_venom_2.h"
@@ -1668,6 +1669,7 @@ void ActorAllRange_Update(ActorAllRange* this) {
                         this->fwork[10] = 20.0f;
                     }
 
+                    SFModGame_AdjustAllRange(this, &spF0, &sp10F, &spF4); // @mod: difficulty, personalities
                     if ((spE8 < spF4) && (spEC < spF4)) {
                         this->iwork[4]++;
                         this->iwork[5] = 1;
@@ -2153,7 +2155,8 @@ void ActorAllRange_Update(ActorAllRange* this) {
         sp90.x = spBC * sp90.z;
         sp90.z = spB4 * sp90.z;
 
-        if ((gCurrentLevel == LEVEL_VENOM_2) && (this->aiType >= AI360_WOLF)) {
+        // @mod: allies and Star Wolf that picked up a laser upgrade fire twin lasers
+        if (((gCurrentLevel == LEVEL_VENOM_2) && (this->aiType >= AI360_WOLF)) || SFModGame_ActorHasTwinLaser(this)) {
             Matrix_RotateY(gCalcMatrix, this->obj.rot.y * M_DTOR, MTXF_NEW);
             Matrix_RotateX(gCalcMatrix, this->obj.rot.x * M_DTOR, MTXF_APPLY);
             Matrix_RotateZ(gCalcMatrix, this->obj.rot.z * M_DTOR, MTXF_APPLY);
