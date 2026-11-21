@@ -6,6 +6,7 @@
 
 #include "prevent_bss_reordering.h"
 #include "global.h"
+#include "port/sfmod/SFModVs.h"
 #include "assets/ast_allies.h"
 #include "assets/ast_corneria.h"
 #include "assets/ast_meteo.h"
@@ -558,7 +559,7 @@ void Radio_Draw(void) {
             gRadioPortraitScaleY = 0.0f;
             gRadioTextBoxScaleY = 0.0f;
             sRadioCheckMouthFlag = 0;
-            if (gCamCount != 1) {
+            if ((gCamCount != 1) && !SFModVs_Active()) { // @mod: the VS CPU mode talks (one view)
                 gRadioState = 0;
             }
             break;
@@ -728,7 +729,20 @@ void Radio_Draw(void) {
 
         radioCharId = (s32) gRadioMsgRadioId;
 
-        if (((radioCharId == RCID_FALCO) || (radioCharId == RCID_SLIPPY)) || (radioCharId == RCID_PEPPY)) {
+        if (SFModVs_Active()) {
+            // @mod: VS CPU mode: the shields of the pilot who talks
+            if (((gCurrentRadioPortrait != RCID_STATIC) && (gCurrentRadioPortrait != RCID_STATIC + 1)) &&
+                (gCurrentRadioPortrait != RCID_1000)) {
+                s32 shields = SFModVs_TalkerShields();
+
+                if ((shields < 0) && (gGameFrameCount & 4)) {
+                    RCP_SetupDL(&gMasterDisp, SETUPDL_76_OPTIONAL);
+                    gDPSetPrimColor(gMasterDisp++, 0x00, 0x00, 255, 255, 0, 255);
+                    Graphics_DisplaySmallText(31.0f, 167, 1.0f, 1.0f, "DOWN");
+                }
+                HUD_TeamShields_Draw(22.0f, 165.0f, (shields < 0) ? 0 : shields);
+            }
+        } else if (((radioCharId == RCID_FALCO) || (radioCharId == RCID_SLIPPY)) || (radioCharId == RCID_PEPPY)) {
             if (radioCharId == RCID_FALCO) {
                 idx = TEAM_ID_FALCO;
             }
@@ -762,9 +776,10 @@ void Radio_Draw(void) {
 
         radioCharId = (s32) gRadioMsgRadioId;
 
-        if ((radioCharId == RCID_WOLF) || (radioCharId == RCID_PIGMA) || (radioCharId == RCID_LEON) ||
-            (radioCharId == RCID_ANDREW) || (radioCharId == RCID_WOLF_2) || (radioCharId == RCID_PIGMA_2) ||
-            (radioCharId == RCID_LEON_2) || (radioCharId == RCID_ANDREW_2)) {
+        if (!SFModVs_Active() && // @mod: see above
+            ((radioCharId == RCID_WOLF) || (radioCharId == RCID_PIGMA) || (radioCharId == RCID_LEON) ||
+             (radioCharId == RCID_ANDREW) || (radioCharId == RCID_WOLF_2) || (radioCharId == RCID_PIGMA_2) ||
+             (radioCharId == RCID_LEON_2) || (radioCharId == RCID_ANDREW_2))) {
             switch (radioCharId) {
                 case RCID_WOLF:
 
@@ -844,7 +859,7 @@ void func_radio_800BC040(void) {
                 gRadioPortraitScaleY = 0.0f;
                 gRadioTextBoxScaleY = 0.0f;
                 gRadioMsgCharIndex = Message_GetWidth(gRadioMsg);
-                if (gCamCount != 1) {
+                if ((gCamCount != 1) && !SFModVs_Active()) { // @mod: the VS CPU mode talks (one view)
                     gRadioState = 0;
                 }
                 break;

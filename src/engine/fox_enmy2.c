@@ -1,4 +1,5 @@
 #include "global.h"
+#include "port/sfmod/SFModGame.h"
 #include "assets/ast_arwing.h"
 #include "assets/ast_training.h"
 #include "assets/ast_corneria.h"
@@ -1382,12 +1383,14 @@ void ActorEvent_ProcessScript(ActorEvent* this) {
             break;
 
         case EV_OPC(EVOP_DAMAGE_TEAM):
+            // @mod: the team takes less damage on higher levels (SFModGame_ScaleTeamDamage)
             if (this->iwork[12] == actorScript[this->aiIndex + 1]) {
                 this->dmgType = DMG_BEAM;
-                this->damage = actorScript[this->aiIndex] & 0x1FF;
+                this->damage = SFModGame_ScaleTeamDamage(actorScript[this->aiIndex] & 0x1FF);
                 this->dmgSource = DMG_SRC_100;
             } else {
-                gTeamDamage[actorScript[this->aiIndex + 1]] = actorScript[this->aiIndex] & 0x1FF;
+                gTeamDamage[actorScript[this->aiIndex + 1]] =
+                    SFModGame_ScaleTeamDamage(actorScript[this->aiIndex] & 0x1FF);
             }
             this->aiIndex += 2;
             ActorEvent_ProcessScript(this);

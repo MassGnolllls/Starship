@@ -111,6 +111,8 @@ add_compile_definitions(
     NON_EQUIVALENT=1
 	AVOID_UB=1
     GBI_FLOATS=1
+    # @mod: 32 bit controller buttons, the mod's extra inputs need more than the N64's 16 (see SFMod.h)
+    CONTROLLERBUTTONS_T=uint32_t
 )
 
 # Find necessary libraries

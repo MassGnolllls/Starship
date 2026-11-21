@@ -168,7 +168,7 @@ bool SFMod_IsFastForwardFrame(void) {
  * --------------------------------------------------------------------------------------------- */
 
 static u8 sTurboPhase[MAX_PLAYERS];
-static u16 sPrevRawHold[MAX_PLAYERS];
+static u32 sPrevRawHold[MAX_PLAYERS];
 static s32 sSwapMsgTimer = 0;
 static bool sSwapMsgSwapped = false;
 
@@ -203,7 +203,7 @@ static bool SFMod_PortControlsShip(s32 port) {
     return SFMod_PortShip(port) != NULL;
 }
 
-static void SFMod_ProcessFireButtons(s32 port, u16 rawHold, u16 rawPress) {
+static void SFMod_ProcessFireButtons(s32 port, u32 rawHold, u32 rawPress) {
     OSContPad* hold = &gControllerHold[port];
     OSContPad* press = &gControllerPress[port];
     bool swapped;
@@ -233,6 +233,9 @@ static void SFMod_ProcessFireButtons(s32 port, u16 rawHold, u16 rawPress) {
         turboHold = (rawHold & A_BUTTON) != 0;
         turboPress = (rawPress & A_BUTTON) != 0;
     }
+    // "Turbo fire + auto tilt" always fires turbo (the swap is about the two fire buttons)
+    turboHold = turboHold || ((rawHold & SFMOD_BTN_TURBO_TILT) != 0);
+    turboPress = turboPress || ((rawPress & SFMOD_BTN_TURBO_TILT) != 0);
 
     hold->button &= ~A_BUTTON;
     press->button &= ~A_BUTTON;
@@ -259,28 +262,48 @@ static void SFMod_ProcessFireButtons(s32 port, u16 rawHold, u16 rawPress) {
 }
 
 /* ---------------------------------------------------------------------------------------------
- * Auto tilt (L button)
+ * Auto tilt (L button, and the "turbo fire + auto tilt" / "brake + auto tilt" inputs)
  *
- * While L is held, the Arwing tilts toward the side it is steered to, exactly as if Z (left) or
- * R (right) were held: tilted, it turns tighter. Without steering it stays level, and without L
- * everything is as usual. The game only sees held Z / R buttons; the first frame of a tilt also
- * gets a single "press" for the game's tilt sound, which is then taken back from the barrel roll
- * check so it never counts as the first tap of a barrel roll. Real Z / R presses always win.
+ * While an auto tilt input is held, the Arwing tilts toward the side it is steered to, exactly as
+ * if Z (left) or R (right) were held: tilted, it turns tighter. Without steering it stays level,
+ * and without the inputs everything is as usual. The game only sees held Z / R buttons; the first
+ * frame of a tilt also gets a single "press" for the game's tilt sound, which is then taken back
+ * from the barrel roll check so it never counts as the first tap of a barrel roll. Pressing an
+ * auto tilt input twice quickly does a barrel roll (to the side steered to), like Z or R twice.
+ * Real Z / R presses always win.
  * --------------------------------------------------------------------------------------------- */
 
 #define SFMOD_AUTOTILT_START 10 // stick (after the game's dead zone, up to 60) that starts a tilt
 #define SFMOD_AUTOTILT_STOP 4   // ... and below which it ends again
+#define SFMOD_AUTOTILT_DOUBLE_TAP 10 // frames between the two presses of a barrel roll (as Z / R)
 
-static s8 sAutoTiltSide[4];   // -1 left (Z), 1 right (R), 0 level
-static u16 sAutoTiltAdded[4]; // buttons the auto tilt added to last frame's hold
-static u16 sAutoTiltTapped[4]; // the button it "pressed" last frame (tilt sound)
+static s8 sAutoTiltSide[4];      // -1 left (Z), 1 right (R), 0 level
+static s8 sAutoTiltLastSide[4];  // the side of the last tilt (barrel roll without steering)
+static u32 sAutoTiltAdded[4];    // buttons the auto tilt added to last frame's hold
+static u32 sAutoTiltTapped[4];   // the button it "pressed" last frame (tilt sound)
+static bool sAutoTiltWasHeld[4]; // an auto tilt input was held last frame
+static s32 sAutoTiltTapFrame[4] = { -1000, -1000, -1000, -1000 }; // frame of the last press of an auto tilt input
 
-static void SFMod_ProcessAutoTilt(s32 port, u16 rawHold, u16 rawPress) {
+static u32 SFMod_AutoTiltInputs(void) {
+    u32 inputs = SFMOD_BTN_TURBO_TILT | SFMOD_BTN_BRAKE_TILT;
+
+    if (CVarGetInteger("gLtoCharge", 0) != 1) {
+        inputs |= L_TRIG; // with "Hold L to Charge" L is the charge button
+    }
+    return inputs;
+}
+
+static void SFMod_ProcessAutoTilt(s32 port, u32 rawHold, u32 rawPress) {
     OSContPad* hold = &gControllerHold[port];
     OSContPad* press = &gControllerPress[port];
     Player* player = SFMod_PortShip(port);
     s32 stickX = press->stick_x; // what the game steers with (dead zone applied)
     s32 side = sAutoTiltSide[port];
+    bool held = (rawHold & SFMod_AutoTiltInputs()) != 0;
+    bool tapped = held && !sAutoTiltWasHeld[port];
+    bool roll = false;
+
+    sAutoTiltWasHeld[port] = held;
 
     // The game computes presses against last frame's hold, which had the added tilt button in it:
     // a real press of that button would get lost.
@@ -298,11 +321,38 @@ static void SFMod_ProcessAutoTilt(s32 port, u16 rawHold, u16 rawPress) {
     }
     sAutoTiltTapped[port] = 0;
 
-    if ((player == NULL) || (player->form != FORM_ARWING) || !(rawHold & L_TRIG) || (rawHold & (Z_TRIG | R_TRIG)) ||
-        (CVarGetInteger("gLtoCharge", 0) == 1)) {
-        // not flying an Arwing, L not held, or tilting by hand (L is the charge button with "Hold L to Charge")
+    // "brake + auto tilt" brakes
+    if ((player != NULL) && (rawHold & SFMOD_BTN_BRAKE_TILT)) {
+        hold->button |= gBrakeButton[player->num];
+        if (rawPress & SFMOD_BTN_BRAKE_TILT) {
+            press->button |= gBrakeButton[player->num];
+        }
+    }
+
+    if (tapped) {
+        roll = (gGameFrameCount - sAutoTiltTapFrame[port]) <= SFMOD_AUTOTILT_DOUBLE_TAP;
+        sAutoTiltTapFrame[port] = roll ? -1000 : gGameFrameCount; // a third press starts over
+    }
+
+    if ((player == NULL) || (player->form != FORM_ARWING) || !held || (rawHold & (Z_TRIG | R_TRIG))) {
+        // not flying an Arwing, no auto tilt input held, or tilting by hand
         sAutoTiltSide[port] = 0;
         return;
+    }
+
+    if (roll && (player->rollState == 0)) {
+        // the second press: a barrel roll, like pressing Z or R twice
+        s32 rollSide = (stickX <= -SFMOD_AUTOTILT_STOP)  ? -1
+                       : (stickX >= SFMOD_AUTOTILT_STOP) ? 1
+                       : (sAutoTiltLastSide[port] != 0)  ? sAutoTiltLastSide[port]
+                                                         : 1;
+        if (rollSide < 0) {
+            player->rollInputTimerL = 5;
+            press->button |= Z_TRIG;
+        } else {
+            player->rollInputTimerR = 5;
+            press->button |= R_TRIG;
+        }
     }
 
     if (((side < 0) && (stickX > -SFMOD_AUTOTILT_STOP)) || ((side > 0) && (stickX < SFMOD_AUTOTILT_STOP))) {
@@ -315,10 +365,10 @@ static void SFMod_ProcessAutoTilt(s32 port, u16 rawHold, u16 rawPress) {
             side = 1;
         }
         // a new tilt: one press for the tilt sound, but never while a real tap could make it a barrel roll
-        if ((side < 0) && (player->rollState == 0) && (player->rollInputTimerL == 0)) {
+        if (!roll && (side < 0) && (player->rollState == 0) && (player->rollInputTimerL == 0)) {
             press->button |= Z_TRIG;
             sAutoTiltTapped[port] = Z_TRIG;
-        } else if ((side > 0) && (player->rollState == 0) && (player->rollInputTimerR == 0)) {
+        } else if (!roll && (side > 0) && (player->rollState == 0) && (player->rollInputTimerR == 0)) {
             press->button |= R_TRIG;
             sAutoTiltTapped[port] = R_TRIG;
         }
@@ -326,6 +376,7 @@ static void SFMod_ProcessAutoTilt(s32 port, u16 rawHold, u16 rawPress) {
     sAutoTiltSide[port] = side;
 
     if (side != 0) {
+        sAutoTiltLastSide[port] = side;
         sAutoTiltAdded[port] = (side < 0) ? Z_TRIG : R_TRIG;
         hold->button |= sAutoTiltAdded[port];
     }
@@ -365,8 +416,8 @@ void SFMod_ProcessInput(void) {
     for (i = 0; i < (SFModVs_Active() ? MAX_PLAYERS : 4); i++) {
         // gControllerPress is computed against last frame's (already modified) hold state,
         // so the mod tracks the real button state itself.
-        u16 rawHold = gControllerHold[i].button;
-        u16 rawPress = rawHold & ~sPrevRawHold[i];
+        u32 rawHold = gControllerHold[i].button;
+        u32 rawPress = rawHold & ~sPrevRawHold[i];
 
         sPrevRawHold[i] = rawHold;
 

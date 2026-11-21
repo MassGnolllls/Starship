@@ -1117,8 +1117,27 @@ static void SFAI_ActorForward(Actor* a, Vec3f* out) {
     out->z = cosf(ry) * cosf(rx);
 }
 
-// Fox's lasers that will hit (what a pilot sees coming)
-static bool SFAI_ActorIncomingFire(Actor* a) {
+// Is this all-range actor on Fox's side?
+static bool SFAI_ActorIsAlly(s32 aiType) {
+    return ((aiType >= AI360_FALCO) && (aiType <= AI360_PEPPY)) || (aiType == AI360_KATT) || (aiType == AI360_BILL);
+}
+
+// Can this laser hurt the actor? Fox and the team shoot at Star Wolf and the enemies, they shoot back.
+static bool SFAI_HostileShot(PlayerShot* shot, bool ally) {
+    s32 src;
+
+    if (shot->sourceId == 0) {
+        return !ally; // Fox's lasers
+    }
+    src = shot->sourceId - NPC_SHOT_ID;
+    if ((src <= 0) || (src >= ARRAY_COUNT(gActors)) || (gActors[src].obj.id != OBJ_ACTOR_ALLRANGE)) {
+        return false;
+    }
+    return SFAI_ActorIsAlly(gActors[src].aiType) != ally;
+}
+
+// lasers that will hit (what a pilot sees coming)
+static bool SFAI_ActorIncomingFire(Actor* a, bool ally) {
     s32 i;
 
     for (i = 0; i < ARRAY_COUNT(gPlayerShots); i++) {
@@ -1127,7 +1146,7 @@ static bool SFAI_ActorIncomingFire(Actor* a) {
         f32 dist;
         f32 speed;
 
-        if ((shot->obj.status != SHOT_ACTIVE) || (shot->sourceId != 0) ||
+        if ((shot->obj.status != SHOT_ACTIVE) || !SFAI_HostileShot(shot, ally) ||
             ((shot->obj.id != PLAYERSHOT_SINGLE_LASER) && (shot->obj.id != PLAYERSHOT_TWIN_LASER))) {
             continue;
         }
@@ -1146,7 +1165,63 @@ static bool SFAI_ActorIncomingFire(Actor* a) {
     return false;
 }
 
-void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool evade, bool mayFire, SFAIActorOrder* order) {
+// A pursuer of the actor: Fox or an all-range actor of the other side, close behind it and aiming at
+// it. Returns its distance (0: none).
+static f32 SFAI_ActorChaser(Actor* a, bool ally, const Vec3f* fwd, f32 awareness) {
+    f32 best = 0.0f;
+    s32 i;
+
+    // Fox
+    if (!ally && (gPlayer[0].state == PLAYERSTATE_ACTIVE)) {
+        Vec3f toFox;
+        Vec3f back;
+        Vec3f foxFwd = gPlayer[0].vel;
+        f32 foxDist;
+
+        toFox.x = gPlayer[0].pos.x - a->obj.pos.x;
+        toFox.y = gPlayer[0].pos.y - a->obj.pos.y;
+        toFox.z = gPlayer[0].trueZpos - a->obj.pos.z;
+        foxDist = SFAI_Len(&toFox);
+        back.x = -toFox.x;
+        back.y = -toFox.y;
+        back.z = -toFox.z;
+        if ((foxDist < awareness) && ((fwd->x * toFox.x + fwd->y * toFox.y + fwd->z * toFox.z) < 0.0f) &&
+            (SFAI_Len(&foxFwd) > 1.0f) && (SFAI_AngleTo(&foxFwd, &back) < 20.0f)) {
+            best = foxDist;
+        }
+    }
+    // the other side's pilots
+    for (i = 1; i < AI360_GREAT_FOX; i++) {
+        Actor* o = &gActors[i];
+        Vec3f to;
+        Vec3f back;
+        Vec3f oFwd;
+        f32 dist;
+
+        if ((o->obj.status != OBJ_ACTIVE) || (o->obj.id != OBJ_ACTOR_ALLRANGE) || (o == a) ||
+            (SFAI_ActorIsAlly(o->aiType) == ally) || (o->aiType >= AI360_GREAT_FOX) || (o->state == SF360_STATE_RETREAT)) {
+            continue;
+        }
+        to.x = o->obj.pos.x - a->obj.pos.x;
+        to.y = o->obj.pos.y - a->obj.pos.y;
+        to.z = o->obj.pos.z - a->obj.pos.z;
+        dist = SFAI_Len(&to);
+        if ((dist >= awareness) || ((fwd->x * to.x + fwd->y * to.y + fwd->z * to.z) >= 0.0f)) {
+            continue;
+        }
+        back.x = -to.x;
+        back.y = -to.y;
+        back.z = -to.z;
+        SFAI_ActorForward(o, &oFwd);
+        if ((SFAI_AngleTo(&oFwd, &back) < 20.0f) && ((best == 0.0f) || (dist < best))) {
+            best = dist;
+        }
+    }
+    return best;
+}
+
+void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool evade, bool mayFire, bool ally,
+                     SFAIActorOrder* order) {
     Actor* a = (Actor*) actorPtr;
     s32 idx = a - gActors;
     SFActorAIState* st;
@@ -1259,25 +1334,11 @@ void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool ev
         st->fireTimer = sActorFireGap[sk];
     }
 
-    // evade Fox: lasers coming in, or Fox behind and aiming
+    // evade: lasers coming in, or somebody of the other side behind and aiming (Fox, the team, Star Wolf ...)
     if (evade && (st->evadeCooldown == 0) && (gPlayer[0].state == PLAYERSTATE_ACTIVE)) {
-        Vec3f toFox;
-        Vec3f foxFwd;
-        Vec3f back;
-        f32 foxDist;
-        bool incoming = (sk >= 2) && SFAI_ActorIncomingFire(a);
-        bool chased;
-
-        toFox.x = gPlayer[0].pos.x - a->obj.pos.x;
-        toFox.y = gPlayer[0].pos.y - a->obj.pos.y;
-        toFox.z = gPlayer[0].trueZpos - a->obj.pos.z;
-        foxDist = SFAI_Len(&toFox);
-        back.x = -toFox.x;
-        back.y = -toFox.y;
-        back.z = -toFox.z;
-        foxFwd = gPlayer[0].vel;
-        chased = (foxDist < sAwareness[sk]) && ((fwd.x * toFox.x + fwd.y * toFox.y + fwd.z * toFox.z) < 0.0f) &&
-                 (SFAI_Len(&foxFwd) > 1.0f) && (SFAI_AngleTo(&foxFwd, &back) < 20.0f);
+        bool incoming = (sk >= 2) && SFAI_ActorIncomingFire(a, ally);
+        f32 foxDist = SFAI_ActorChaser(a, ally, &fwd, sAwareness[sk]); // (the pursuer, Fox or not)
+        bool chased = foxDist > 0.0f;
 
         if (incoming || chased) {
             f32 chance = sManeuverSkill[sk] * (0.15f + 0.45f * p->caution);

@@ -89,6 +89,10 @@ void SFModGame_AdjustAllRange(void* actor, float* fireChance, uint8_t* fireMask,
 bool SFModGame_ActorHasTwinLaser(void* actor);
 // boss fights: the team stays out of the way (OBJ_ACTOR_TEAM_BOSS, after its action was chosen)
 void SFModGame_TeamBossHold(void* actor);
+// all-range dogfights: the team and Star Wolf pick whom to fight (from level 2 on)
+void SFModGame_StoryTargets(void* actor);
+// damage the team takes (from level 2 on less, the higher the level)
+int32_t SFModGame_ScaleTeamDamage(int32_t damage);
 // new AI for a chasing all-range actor: true when it flies this actor (fire 0/1, move SFAIActorMove)
 bool SFModGame_StoryAI(void* actor, bool fighting, int32_t* fire, int32_t* move);
 

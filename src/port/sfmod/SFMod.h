@@ -21,7 +21,10 @@ extern "C" {
 // libultraship maps them like any other button (see Engine.cpp).
 #define SFMOD_BTN_TURBO 0x0040
 #define SFMOD_BTN_SWAP 0x0080
-#define SFMOD_EXTRA_BUTTONS (SFMOD_BTN_TURBO | SFMOD_BTN_SWAP)
+// beyond the N64's 16 buttons (CONTROLLERBUTTONS_T is 32 bit, see CMakeLists.txt)
+#define SFMOD_BTN_TURBO_TILT 0x10000 // turbo fire + auto tilt
+#define SFMOD_BTN_BRAKE_TILT 0x20000 // brake + auto tilt
+#define SFMOD_EXTRA_BUTTONS (SFMOD_BTN_TURBO | SFMOD_BTN_SWAP | SFMOD_BTN_TURBO_TILT | SFMOD_BTN_BRAKE_TILT)
 
 // Game logic frames between two turbo shots. The game logic runs at 30 frames per second,
 // so this gives 10 shots per second - the same rate as Starship's rapid-fire cheat.

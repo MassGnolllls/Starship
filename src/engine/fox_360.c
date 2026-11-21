@@ -909,9 +909,9 @@ void ActorAllRange_ApplyDamage(ActorAllRange* this) {
                 }
             } else if ((this->aiType <= AI360_PEPPY) && (this->state != STATE360_6)) {
                 if (this->aiType == AI360_FALCO) {
-                    gTeamDamage[this->aiType] = this->damage;
+                    gTeamDamage[this->aiType] = SFModGame_ScaleTeamDamage(this->damage); // @mod: difficulty
                 } else {
-                    gTeamDamage[this->aiType] = this->damage * 2;
+                    gTeamDamage[this->aiType] = SFModGame_ScaleTeamDamage(this->damage * 2); // @mod: difficulty
                 }
             }
 
@@ -1470,6 +1470,8 @@ void ActorAllRange_Update(ActorAllRange* this) {
         this->iwork[1] = 0;
         this->timer_0C2 = 10000;
     }
+
+    SFModGame_StoryTargets(this); // @mod: from level 2 on the team and Star Wolf pick their fights
 
     switch (this->state) {
         case STATE360_6:

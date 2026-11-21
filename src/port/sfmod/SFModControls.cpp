@@ -233,8 +233,18 @@ void ControlsWindow::DrawElement() {
         DrawButtonAction("Auto tilt (tighter turns)",
                          "Hold while steering: the Arwing tilts to the side you steer to (like holding\n"
                          "Tilt left / Tilt right), so it turns tighter. Not steering: no tilt.\n"
+                         "Press twice quickly for a barrel roll (to the side you steer to).\n"
                          "Does nothing while \"Hold L to Charge\" is switched on.",
                          BTN_L);
+        DrawButtonAction("Turbo fire + auto tilt",
+                         "Turbo fire and Auto tilt at once, like holding both keys.\n"
+                         "Always turbo fire, also when the fire buttons are swapped.\n"
+                         "Press twice quickly for a barrel roll.",
+                         SFMOD_BTN_TURBO_TILT);
+        DrawButtonAction("Brake + auto tilt",
+                         "Brake and Auto tilt at once, like holding both keys: very tight turns.\n"
+                         "Press twice quickly for a barrel roll.",
+                         SFMOD_BTN_BRAKE_TILT);
         DrawButtonAction("Change view", "Cockpit view / behind the ship", BTN_CUP);
         DrawButtonAction("Answer radio", "Talk to ROB / answer incoming messages", BTN_CRIGHT);
         DrawButtonAction("Pause / skip cutscene", nullptr, BTN_START);

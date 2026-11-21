@@ -55,6 +55,14 @@ typedef enum SFAIActorMove {
     SFAI_MOVE_ROLL,  // barrel roll (lasers bounce off)
 } SFAIActorMove;
 
+// states of the all-range actors (ActorAllRangeState in fox_360.c)
+#define SF360_STATE_ARRIVE 0  // STATE360_0
+#define SF360_STATE_1 1       // STATE360_1
+#define SF360_STATE_CHASE 2   // STATE360_2: after its target (aiIndex)
+#define SF360_STATE_ROAM 3    // STATE360_3: flies around (or flees)
+#define SF360_STATE_MISSILE 5 // STATE360_5: Sector Z missile
+#define SF360_STATE_RETREAT 6 // STATE360_6: leaves the fight
+
 typedef struct SFAIActorOrder {
     bool fire;
     int32_t move; // SFAIActorMove
@@ -62,7 +70,9 @@ typedef struct SFAIActorOrder {
 
 // actor: an all-range Actor that chases its target (aiIndex). level 1..7, personality index or -1.
 // evade: may evade Fox's attacks (enemies). mayFire: the fight is on.
-void SFAI_ActorThink(void* actor, int32_t level, int32_t personality, bool evade, bool mayFire, SFAIActorOrder* order);
+// ally: the actor flies for Fox (the team), otherwise against him (Star Wolf, enemy fighters)
+void SFAI_ActorThink(void* actor, int32_t level, int32_t personality, bool evade, bool mayFire, bool ally,
+                     SFAIActorOrder* order);
 
 #ifdef __cplusplus
 }

@@ -881,12 +881,16 @@ void PlayerShot_CollisionCheck(PlayerShot* shot) {
                         Effect_Effect393_Spawn(player->pos.x, player->pos.y, player->trueZpos, 8.0f);
                     } else {
                         PlayerShot_Impact(shot);
-                        if (player->hitTimer == 0) {
+                        // @mod: VS CPU mode: hits count like in a Star Wolf fight (see SFModVs_LaserHitCounts)
+                        if ((player->hitTimer == 0) || SFModVs_LaserHitCounts(player->hitTimer)) {
+                            s32 pending = SFModVs_Active() ? player->damage : 0; // @mod: keep what still drains
+
                             if (gPlayer[0].form == FORM_ON_FOOT) {
                                 Player_ApplyDamage(player, 0, 60);
                             } else {
                                 Player_ApplyDamage(player, 0, 20);
                             }
+                            player->damage += pending;
                             player->unk_284 = 1;
                             if (gCamCount != 1) {
                                 player->attacker = shot->sourceId + 1;

@@ -53,6 +53,7 @@ typedef struct SFVsConfig {
     int32_t target;     // kills to win / minutes / lives
     bool teams;
     SFVsPilot pilots[MAX_PLAYERS];
+    bool oshaberi;      // the CPU pilots talk on the radio during the match
 } SFVsConfig;
 
 extern SFVsConfig gSFVs;
@@ -60,6 +61,10 @@ extern SFVsConfig gSFVs;
 bool SFModVs_Active(void);
 int32_t SFModVs_ViewedPlayer(void);
 bool SFModVs_IsHuman(int32_t playerNum);
+// the shields of the CPU pilot who talks on the radio ("Oshaberi"), -1 when shot down
+int32_t SFModVs_TalkerShields(void);
+// a laser hit on a pilot that was hit a moment ago (hitTimer still running) counts
+bool SFModVs_LaserHitCounts(int32_t hitTimer);
 // Personal sounds (being hit, shield warnings, lock-ons, item pickups) are only heard for the watched
 // pilot; false when this pilot's sound should stay silent
 bool SFModVs_HearsSfx(int32_t playerNum, uint32_t sfxId);

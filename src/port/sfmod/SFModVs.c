@@ -6,6 +6,7 @@
 #include "SFMod.h"
 #include "global.h"
 #include "assets/ast_common.h"
+#include "assets/ast_radio.h"
 #include "port/mods/PortEnhancements.h"
 
 /*
@@ -60,6 +61,7 @@ SFVsConfig gSFVs = {
         { SFVS_BILL, 4, -1, 3 },
         { SFVS_KATT, 4, -1, 4 },
     },
+    true, // oshaberi: the CPU pilots talk
 };
 
 static const char* sCharacterNames[SFVS_CHARACTER_COUNT] = {
@@ -96,6 +98,7 @@ static void SFModVs_LoadConfig(void) {
     gSFVs.rule = CLAMP(CVarGetInteger(CVAR_SFVS_PREFIX "Rule", gSFVs.rule), 0, SFVS_RULE_COUNT - 1);
     gSFVs.target = CLAMP(CVarGetInteger(CVAR_SFVS_PREFIX "Target", gSFVs.target), 1, 20);
     gSFVs.teams = CVarGetInteger(CVAR_SFVS_PREFIX "Teams", gSFVs.teams) != 0;
+    gSFVs.oshaberi = CVarGetInteger(CVAR_SFVS_PREFIX "Oshaberi", gSFVs.oshaberi) != 0;
     for (i = 0; i < MAX_PLAYERS; i++) {
         SFVsPilot* p = &gSFVs.pilots[i];
 
@@ -120,6 +123,7 @@ static void SFModVs_SaveConfig(void) {
     CVarSetInteger(CVAR_SFVS_PREFIX "Rule", gSFVs.rule);
     CVarSetInteger(CVAR_SFVS_PREFIX "Target", gSFVs.target);
     CVarSetInteger(CVAR_SFVS_PREFIX "Teams", gSFVs.teams);
+    CVarSetInteger(CVAR_SFVS_PREFIX "Oshaberi", gSFVs.oshaberi);
     for (i = 0; i < MAX_PLAYERS; i++) {
         SFVsPilot* p = &gSFVs.pilots[i];
 
@@ -179,8 +183,8 @@ static bool sOut[MAX_PLAYERS];
 static s32 sRespawnTimer[MAX_PLAYERS];
 static s32 sPrevState[MAX_PLAYERS];
 static u16 sAiPrevHold[MAX_PLAYERS];
-static u16 sHumanPrevHold;
-static u16 sSpectatorPress;    // buttons pressed on the human controller this frame
+static u32 sHumanPrevHold;
+static u32 sSpectatorPress;    // buttons pressed on the human controller this frame
 static SFVsFeed sFeed[SFVS_FEED_COUNT];
 static bool sDebug = false;
 
@@ -220,6 +224,13 @@ bool SFModVs_HearsSfx(int32_t playerNum, uint32_t sfxId) {
         default:
             return true;
     }
+}
+
+// The original VS mode ignores every laser hit for 20 frames after a hit, so most hits of a fast
+// shooter (turbo fire) do nothing. In the VS CPU mode a laser hit counts once 6 frames have passed
+// since the last one, like the hits on Star Wolf in the missions.
+bool SFModVs_LaserHitCounts(int32_t hitTimer) {
+    return SFModVs_Active() && (hitTimer <= 20 - 6);
 }
 
 bool SFModVs_IsHuman(int32_t playerNum) {
@@ -399,7 +410,7 @@ static s8 SFModVs_RawStick(s8 processed) {
 
 void SFModVs_FillInputs(void) {
     OSContPad human;
-    u16 humanPress;
+    u32 humanPress;
     s32 i;
     bool aiRuns;
 
@@ -538,6 +549,554 @@ static s32 SFModVs_RandomAlivePilot(s32 except) {
     return alive[RAND_INT(count - 0.01f)];
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Oshaberi: the CPU pilots talk on the radio during the match, in character, with the lines they
+ * say in the missions (taunts, calls for help, being shot down ...). Lines that name somebody are
+ * only used when that one is meant (Fox as the target, Fox as a teammate, ...).
+ * ------------------------------------------------------------------------------------------------ */
+
+typedef enum {
+    TALK_START,  // the match begins
+    TALK_ATTACK, // on somebody's tail
+    TALK_CHASED, // somebody on the own tail
+    TALK_KILL,   // shot somebody down
+    TALK_DOWN,   // was shot down
+    TALK_HIT,    // took a hit
+    TALK_SAVED,  // a teammate shot down the one on the own tail
+    TALK_WARN,   // a teammate (Fox) has somebody on his tail
+    TALK_NICE,   // a teammate shot somebody down
+} SFVsTalkEvent;
+
+// what a line needs
+#define TN_OTHER_FOX (1 << 0)     // the other pilot of the event is Fox
+#define TN_OTHER_FALCO (1 << 1)   // ... Falco
+#define TN_OTHER_PEPPY (1 << 2)   // ... Peppy
+#define TN_OTHER_SLIPPY (1 << 3)  // ... Slippy
+#define TN_OTHER_STARFOX (1 << 4) // ... one of Fox, Falco, Peppy, Slippy
+#define TN_OTHER_MALE (1 << 5)    // ... not Katt
+#define TN_ALLY_FOX (1 << 6)      // Fox flies in the speaker's team
+#define TN_FOE_STARFOX (1 << 7)   // the speaker fights one of Fox, Falco, Peppy, Slippy
+#define TN_FOE_STARWOLF (1 << 8)  // ... one of Wolf, Leon, Pigma, Andrew
+#define TN_FOE_PEPPY (1 << 9)     // ... Peppy
+#define TN_FOX_THERE (1 << 10)    // Fox flies in this match
+#define TN_TEAMMATES (1 << 11)    // the speaker has teammates left
+#define TN_LAST (1 << 12)         // no opponent of the speaker left (survival)
+#define TN_ONE_LEFT (1 << 13)     // one opponent left (survival)
+#define TN_OUT (1 << 14)          // the speaker is out of the match (survival)
+#define TN_PERSONAL (TN_OTHER_FOX | TN_OTHER_FALCO | TN_OTHER_PEPPY | TN_OTHER_SLIPPY)
+
+typedef struct {
+    u8 character; // SFVsCharacter
+    u8 event;     // SFVsTalkEvent
+    u16 needs;
+    char* msg;
+} SFVsLine;
+
+// clang-format off
+static const SFVsLine sLines[] = {
+    // Fox
+    { SFVS_FOX, TALK_START, 0, gMsg_ID_2050 },                       // I see 'em up ahead! Let's rock and roll!
+    { SFVS_FOX, TALK_START, TN_FOE_STARWOLF, gMsg_ID_9285 },         // Just what I need to see. Star Wolf.
+    { SFVS_FOX, TALK_START, TN_FOE_STARWOLF, gMsg_ID_19240 },        // We'll just see about that, Star Wolf.
+    { SFVS_FOX, TALK_CHASED, TN_TEAMMATES, gMsg_ID_9380 },           // Geez! Can anyone take care of it?
+    { SFVS_FOX, TALK_KILL, TN_ONE_LEFT, gMsg_ID_19465 },             // There's one more to go.
+    { SFVS_FOX, TALK_DOWN, 0, gMsg_ID_20318 },                       // Aaaaahhh!
+    { SFVS_FOX, TALK_DOWN, 0, gMsg_ID_18080 },                       // Dang........
+    // Falco
+    { SFVS_FALCO, TALK_START, 0, gMsg_ID_17320 },                    // Now it's our turn to kick some tail!
+    { SFVS_FALCO, TALK_START, 0, gMsg_ID_18035 },                    // Here they come!
+    { SFVS_FALCO, TALK_START, TN_ALLY_FOX, gMsg_ID_20298 },          // Come on, Fox. Let's kick some tail.
+    { SFVS_FALCO, TALK_START, TN_ALLY_FOX, gMsg_ID_4094 },           // Let me get a piece of that action, Fox!
+    { SFVS_FALCO, TALK_ATTACK, 0, gMsg_ID_9190 },                    // Time for a little payback!
+    { SFVS_FALCO, TALK_ATTACK, 0, gMsg_ID_9211 },                    // You're dead meat, pal!
+    { SFVS_FALCO, TALK_ATTACK, 0, gMsg_ID_20309 },                   // You're not leavin', yet!
+    { SFVS_FALCO, TALK_CHASED, TN_OTHER_MALE, gMsg_ID_9100 },        // Shoot! He's right behind me!
+    { SFVS_FALCO, TALK_CHASED, TN_OTHER_MALE, gMsg_ID_9130 },        // I can't shake this guy!
+    { SFVS_FALCO, TALK_KILL, 0, gMsg_ID_9220 },                      // Scratch one bogey!
+    { SFVS_FALCO, TALK_KILL, 0, gMsg_ID_7011 },                      // Too late! Game over, pal!
+    { SFVS_FALCO, TALK_KILL, TN_ONE_LEFT, gMsg_ID_5504 },            // YEAH! Just one more.
+    { SFVS_FALCO, TALK_KILL, TN_LAST, gMsg_ID_9438 },                // I got the last one!
+    { SFVS_FALCO, TALK_DOWN, 0, gMsg_ID_20090 },                     // No!!!!
+    { SFVS_FALCO, TALK_DOWN, 0, gMsg_ID_9151 },                      // Dang, I'm hit!
+    { SFVS_FALCO, TALK_DOWN, TN_OUT, gMsg_ID_20220 },                // Oh man! I'm gonna have to back off.
+    { SFVS_FALCO, TALK_HIT, 0, gMsg_ID_20310 },                      // Crud!
+    { SFVS_FALCO, TALK_HIT, 0, gMsg_ID_20030 },                      // Shoot! I've taken damage!
+    { SFVS_FALCO, TALK_SAVED, TN_OTHER_FOX, gMsg_ID_9160 },          // Gee, I've been saved by Fox. How swell.
+    { SFVS_FALCO, TALK_SAVED, TN_OTHER_FOX, gMsg_ID_9430 },          // That was a close call, Fox!
+    { SFVS_FALCO, TALK_WARN, TN_OTHER_FOX, gMsg_ID_2233 },           // Move it, Fox! He's right behind you!
+    { SFVS_FALCO, TALK_WARN, TN_OTHER_FOX, gMsg_ID_20315 },          // Watch out, Fox!
+    { SFVS_FALCO, TALK_NICE, TN_OTHER_FOX, gMsg_ID_20017 },          // Ah, you're getting better, Fox.
+    { SFVS_FALCO, TALK_NICE, TN_OTHER_FOX, gMsg_ID_8320 },           // OK, I'll admit it. You did good, Fox.
+    { SFVS_FALCO, TALK_NICE, 0, gMsg_ID_20262 },                     // I guess you're good for something.
+    // Slippy
+    { SFVS_SLIPPY, TALK_START, 0, gMsg_ID_3005 },                    // Things are starting to heat up!
+    { SFVS_SLIPPY, TALK_START, TN_ALLY_FOX, gMsg_ID_20300 },         // Let's take it to 'em, Fox.
+    { SFVS_SLIPPY, TALK_START, TN_TEAMMATES, gMsg_ID_16280 },        // Don't worry. Slippy's here!
+    { SFVS_SLIPPY, TALK_ATTACK, 0, gMsg_ID_9200 },                   // You're not gettin' away that easy!
+    { SFVS_SLIPPY, TALK_ATTACK, 0, gMsg_ID_9212 },                   // I've got you now!
+    { SFVS_SLIPPY, TALK_ATTACK, 0, gMsg_ID_11040 },                  // Your carcass is mine!
+    { SFVS_SLIPPY, TALK_CHASED, TN_ALLY_FOX, gMsg_ID_9110 },         // Fox, get this guy off me!
+    { SFVS_SLIPPY, TALK_CHASED, 0, gMsg_ID_20013 },                  // I'm havin' some trouble here!
+    { SFVS_SLIPPY, TALK_CHASED, 0, gMsg_ID_9140 },                   // This is really starting to tick me off!
+    { SFVS_SLIPPY, TALK_KILL, 0, gMsg_ID_9230 },                     // I got one!
+    { SFVS_SLIPPY, TALK_KILL, 0, gMsg_ID_7086 },                     // Yeah! Yeah!
+    { SFVS_SLIPPY, TALK_KILL, TN_LAST, gMsg_ID_9436 },               // I got the last one!
+    { SFVS_SLIPPY, TALK_DOWN, 0, gMsg_ID_20092 },                    // No!!!!
+    { SFVS_SLIPPY, TALK_DOWN, 0, gMsg_ID_9152 },                     // Ahhh!! I'm hit!
+    { SFVS_SLIPPY, TALK_DOWN, TN_OUT, gMsg_ID_20222 },               // I'm monkey food if I don't leave!
+    { SFVS_SLIPPY, TALK_HIT, 0, gMsg_ID_20311 },                     // Oh no!
+    { SFVS_SLIPPY, TALK_HIT, 0, gMsg_ID_20050 },                     // Slippy's hit!
+    { SFVS_SLIPPY, TALK_SAVED, 0, gMsg_ID_9170 },                    // Hoo! That was TOO close.
+    { SFVS_SLIPPY, TALK_SAVED, 0, gMsg_ID_4112 },                    // I knew you'd come help me!
+    { SFVS_SLIPPY, TALK_SAVED, 0, gMsg_ID_4100 },                    // I thought I was a goner!
+    { SFVS_SLIPPY, TALK_WARN, TN_OTHER_FOX, gMsg_ID_20316 },         // Watch out, Fox!
+    { SFVS_SLIPPY, TALK_NICE, TN_OTHER_FOX, gMsg_ID_19410 },         // Way to go, Fox!
+    { SFVS_SLIPPY, TALK_NICE, TN_OTHER_FOX, gMsg_ID_20263 },         // Great, Fox!
+    { SFVS_SLIPPY, TALK_NICE, 0, gMsg_ID_2305 },                     // There ya go!
+    // Peppy
+    { SFVS_PEPPY, TALK_START, 0, gMsg_ID_20304 },                    // Never give up. Trust your instincts.
+    { SFVS_PEPPY, TALK_START, TN_ALLY_FOX, gMsg_ID_20296 },          // Come on, Fox. You can do it.
+    { SFVS_PEPPY, TALK_ATTACK, 0, gMsg_ID_9210 },                    // I won't let you get away from me!
+    { SFVS_PEPPY, TALK_ATTACK, 0, gMsg_ID_9213 },                    // You're mine!
+    { SFVS_PEPPY, TALK_CHASED, TN_ALLY_FOX, gMsg_ID_9120 },          // Take care of the guy behind me, Fox!
+    { SFVS_PEPPY, TALK_CHASED, 0, gMsg_ID_19464 },                   // I can't break free!
+    { SFVS_PEPPY, TALK_KILL, 0, gMsg_ID_9240 },                      // There's one down!
+    { SFVS_PEPPY, TALK_KILL, TN_LAST, gMsg_ID_9437 },                // I got the last one!
+    { SFVS_PEPPY, TALK_DOWN, 0, gMsg_ID_20091 },                     // No!!!!
+    { SFVS_PEPPY, TALK_DOWN, 0, gMsg_ID_9153 },                      // Shoot! They got me!
+    { SFVS_PEPPY, TALK_DOWN, TN_OUT, gMsg_ID_20221 },                // Sorry, guys, I've gotta sit this one out.
+    { SFVS_PEPPY, TALK_HIT, 0, gMsg_ID_20312 },                      // Doggone it!
+    { SFVS_PEPPY, TALK_HIT, 0, gMsg_ID_20040 },                      // Dang! I'm hit!
+    { SFVS_PEPPY, TALK_SAVED, TN_OTHER_FOX, gMsg_ID_9180 },          // Your father helped me like that, too.
+    { SFVS_PEPPY, TALK_SAVED, 0, gMsg_ID_20016 },                    // I saw my life flash before my eyes!
+    { SFVS_PEPPY, TALK_WARN, TN_OTHER_FOX, gMsg_ID_20317 },          // Watch out, Fox!
+    { SFVS_PEPPY, TALK_NICE, TN_OTHER_FOX, gMsg_ID_17160 },          // Good going, Fox.
+    { SFVS_PEPPY, TALK_NICE, TN_OTHER_FOX, gMsg_ID_20281 },          // I see your father in you, Fox.
+    { SFVS_PEPPY, TALK_NICE, 0, gMsg_ID_14230 },                     // Good job. Keep up the good work.
+    // Wolf
+    { SFVS_WOLF, TALK_START, TN_FOE_STARFOX, gMsg_ID_9250 },         // Can't let you do that, Star Fox!
+    { SFVS_WOLF, TALK_START, TN_FOE_STARFOX, gMsg_ID_11100 },        // Play time is over, Star Fox!
+    { SFVS_WOLF, TALK_START, TN_FOE_STARFOX, gMsg_ID_19200 },        // Don't get too cocky, Star Fox!
+    { SFVS_WOLF, TALK_ATTACK, 0, gMsg_ID_9290 },                     // You're in my sights! You're going down!
+    { SFVS_WOLF, TALK_ATTACK, 0, gMsg_ID_19450 },                    // What?! Is that all you got?
+    { SFVS_WOLF, TALK_ATTACK, TN_OTHER_FOX, gMsg_ID_9289 },          // You'll be seeing your dad soon, Fox!
+    { SFVS_WOLF, TALK_CHASED, 0, gMsg_ID_9330 },                     // I will not be defeated by this trash!
+    { SFVS_WOLF, TALK_CHASED, 0, gMsg_ID_19454 },                    // You're good, but I'm better.
+    { SFVS_WOLF, TALK_KILL, 0, gMsg_ID_9322 },                       // You're not so tough!
+    { SFVS_WOLF, TALK_KILL, TN_LAST | TN_OTHER_STARFOX, gMsg_ID_9431 }, // Looks like we win today, Star Fox.
+    { SFVS_WOLF, TALK_DOWN, 0, gMsg_ID_9365 },                       // I...can't...lose!
+    { SFVS_WOLF, TALK_DOWN, 0, gMsg_ID_19458 },                      // No way! I don't believe it!
+    { SFVS_WOLF, TALK_HIT, 0, gMsg_ID_9369 },                        // What the heck?!
+    // Leon
+    { SFVS_LEON, TALK_START, TN_FOE_STARFOX, gMsg_ID_9260 },         // Andross has ordered us to take you down.
+    { SFVS_LEON, TALK_START, 0, gMsg_ID_19210 },                     // Let's see how you handle our new ships!
+    { SFVS_LEON, TALK_START, 0, gMsg_ID_11110 },                     // I think I'll torture you for awhile!
+    { SFVS_LEON, TALK_ATTACK, 0, gMsg_ID_19451 },                    // I'll take care of you!
+    { SFVS_LEON, TALK_ATTACK, TN_OTHER_FALCO, gMsg_ID_9323 },        // Annoying bird! I am the great Leon!
+    { SFVS_LEON, TALK_CHASED, 0, gMsg_ID_9340 },                     // Shoot me down if you can!
+    { SFVS_LEON, TALK_CHASED, 0, gMsg_ID_19455 },                    // Not yet. The party's just begun!
+    { SFVS_LEON, TALK_KILL, 0, gMsg_ID_9300 },                       // You're not as tough as I thought.
+    { SFVS_LEON, TALK_KILL, 0, gMsg_ID_9432 },                       // Close, but no cigar! HA HA!
+    { SFVS_LEON, TALK_DOWN, 0, gMsg_ID_9366 },                       // This can't be happening!
+    { SFVS_LEON, TALK_DOWN, TN_OTHER_MALE, gMsg_ID_19459 },          // He's too strong!
+    // Pigma
+    { SFVS_PIGMA, TALK_START, 0, gMsg_ID_9270 },                     // We're gettin' paid a lot of cash for this.
+    { SFVS_PIGMA, TALK_START, TN_FOE_PEPPY, gMsg_ID_9275 },          // Peppy! Long time no see!
+    { SFVS_PIGMA, TALK_ATTACK, 0, gMsg_ID_19452 },                   // I'm gonna bust you up REAL good!
+    { SFVS_PIGMA, TALK_ATTACK, TN_OTHER_FOX, gMsg_ID_9310 },         // That reward's as good as mine!
+    { SFVS_PIGMA, TALK_ATTACK, TN_OTHER_FOX, gMsg_ID_19220 },        // Too bad dad's not here to see ya FAIL!
+    { SFVS_PIGMA, TALK_ATTACK, TN_OTHER_PEPPY, gMsg_ID_9324 },       // I'll do you fast, Peppy old pal.
+    { SFVS_PIGMA, TALK_CHASED, TN_OTHER_MALE, gMsg_ID_9350 },        // Come on, little man! Shoot me!
+    { SFVS_PIGMA, TALK_CHASED, 0, gMsg_ID_19456 },                   // You can't beat me. I've got a better ship!
+    { SFVS_PIGMA, TALK_KILL, 0, gMsg_ID_9433 },                      // I've got two words for you: LO-SER!!!
+    { SFVS_PIGMA, TALK_DOWN, 0, gMsg_ID_9367 },                      // My beautiful reward! Aaarrrggghhh!
+    { SFVS_PIGMA, TALK_DOWN, 0, gMsg_ID_19460 },                     // This can't be happening!
+    // Andrew
+    { SFVS_ANDREW, TALK_START, 0, gMsg_ID_9280 },                    // Andross' enemy is my enemy.
+    { SFVS_ANDREW, TALK_START, 0, gMsg_ID_11130 },                   // You'll be sorry you crossed us!
+    { SFVS_ANDREW, TALK_ATTACK, 0, gMsg_ID_19453 },                  // You're not welcome here!
+    { SFVS_ANDREW, TALK_ATTACK, 0, gMsg_ID_9320 },                   // Bow before the great Andross!
+    { SFVS_ANDREW, TALK_ATTACK, 0, gMsg_ID_19457 },                  // Give it up. You can't win!
+    { SFVS_ANDREW, TALK_ATTACK, TN_OTHER_SLIPPY, gMsg_ID_9325 },     // Stick to the pond, Froggie.
+    { SFVS_ANDREW, TALK_CHASED, 0, gMsg_ID_9360 },                   // I'm not afraid of YOU!
+    { SFVS_ANDREW, TALK_KILL, 0, gMsg_ID_9434 },                     // Score one for Andross!
+    { SFVS_ANDREW, TALK_DOWN, 0, gMsg_ID_9368 },                     // Uncle Andross!
+    { SFVS_ANDREW, TALK_DOWN, 0, gMsg_ID_19461 },                    // Ahhhh!!!!
+    // Bill
+    { SFVS_BILL, TALK_START, TN_FOX_THERE, gMsg_ID_18120 },          // Just like old times, eh Fox?
+    { SFVS_BILL, TALK_START, TN_ALLY_FOX, gMsg_ID_18100 },           // I'm glad we're on the same team, Fox.
+    { SFVS_BILL, TALK_START, TN_TEAMMATES, gMsg_ID_18000 },          // Hang on, guys. Help is on the way!
+    { SFVS_BILL, TALK_NICE, 0, gMsg_ID_18066 },                      // Yee haaaa! You did it!
+    { SFVS_BILL, TALK_NICE, TN_OTHER_FOX, gMsg_ID_18031 },           // You've become quite a pilot.
+    // Katt
+    { SFVS_KATT, TALK_START, 0, gMsg_ID_16135 },                     // Make way for Katt!
+    { SFVS_KATT, TALK_START, 0, gMsg_ID_16120 },                     // Are you gonna hog all the fun?
+    { SFVS_KATT, TALK_ATTACK, 0, gMsg_ID_16135 },                    // Make way for Katt!
+    { SFVS_KATT, TALK_CHASED, 0, gMsg_ID_20084 },                    // You tryin' to damage my pretty face?!
+    { SFVS_KATT, TALK_KILL, TN_OTHER_MALE, gMsg_ID_16165 },          // Too bad, little man.
+    { SFVS_KATT, TALK_DOWN, TN_OTHER_MALE, gMsg_ID_17300 },          // You're pretty good, tiger. See you again!
+    { SFVS_KATT, TALK_HIT, 0, gMsg_ID_20084 },                       // You tryin' to damage my pretty face?!
+    { SFVS_KATT, TALK_SAVED, 0, gMsg_ID_16140 },                     // Beautiful! I could kiss you for that!
+    { SFVS_KATT, TALK_NICE, 0, gMsg_ID_16140 },                      // Beautiful! I could kiss you for that!
+};
+// clang-format on
+
+#define TALK_GAP 150      // frames at least between two lines (kills: TALK_KILL_GAP)
+#define TALK_KILL_GAP 60
+#define TALK_COOLDOWN 600 // the same pilot doesn't talk about small things that often
+
+static s32 sTalkSince;  // frames since the last line
+static s32 sTalkGap;    // frames until the next small line
+static s32 sTalkStart;  // frames until the first line of the match
+static s32 sTalkCooldown[MAX_PLAYERS];
+static s32 sAttackTicks[MAX_PLAYERS];
+static s32 sAttackTarget[MAX_PLAYERS];
+static s32 sChasedTicks[MAX_PLAYERS];
+static s32 sChasedBy[MAX_PLAYERS];
+static s32 sLastChaser[MAX_PLAYERS];
+static s32 sLastChasedFrame[MAX_PLAYERS];
+static s32 sTalkPrevHitTimer[MAX_PLAYERS];
+static u32 sTalkRng = 0x2545F491;
+static s32 sTalker = -1; // the pilot who talks on the radio
+
+// the shields of the pilot who talks (the radio shows them), -1 when that pilot is down
+int32_t SFModVs_TalkerShields(void) {
+    if ((sTalker < 0) || (sTalker >= gCamCount)) {
+        return 0;
+    }
+    if (!SFModVs_Alive(sTalker)) {
+        return -1;
+    }
+    return gPlayer[sTalker].shields;
+}
+
+static u32 SFModVs_TalkRand(u32 n) {
+    sTalkRng ^= sTalkRng << 13;
+    sTalkRng ^= sTalkRng >> 17;
+    sTalkRng ^= sTalkRng << 5;
+    return (n == 0) ? 0 : (sTalkRng % n);
+}
+
+// a CPU pilot of this match (the human doesn't get words put in his mouth)
+static bool SFModVs_Speaks(s32 i) {
+    return gSFVs.oshaberi && (i >= 0) && (i < gCamCount) && (i < gSFVs.numPilots) && !(gSFVs.humanPlays && (i == 0));
+}
+
+static RadioCharacterId SFModVs_Rcid(s32 character) {
+    switch (character) {
+        case SFVS_FOX:
+            return RCID_FOX;
+        case SFVS_FALCO:
+            return RCID_FALCO;
+        case SFVS_PEPPY:
+            return RCID_PEPPY;
+        case SFVS_SLIPPY:
+            return RCID_SLIPPY;
+        case SFVS_WOLF:
+            return RCID_WOLF;
+        case SFVS_PIGMA:
+            return RCID_PIGMA;
+        case SFVS_ANDREW:
+            return RCID_ANDREW;
+        case SFVS_LEON:
+            return RCID_LEON;
+        case SFVS_BILL:
+            return RCID_BILL;
+        default:
+            return RCID_KATT;
+    }
+}
+
+static u32 SFModVs_TalkFlags(s32 speaker, s32 other) {
+    u32 f = 0;
+    s32 foes = 0;
+    s32 i;
+
+    if ((other >= 0) && (other < gCamCount)) {
+        s32 c = SFModVs_Character(other);
+
+        if (c == SFVS_FOX) {
+            f |= TN_OTHER_FOX;
+        } else if (c == SFVS_FALCO) {
+            f |= TN_OTHER_FALCO;
+        } else if (c == SFVS_PEPPY) {
+            f |= TN_OTHER_PEPPY;
+        } else if (c == SFVS_SLIPPY) {
+            f |= TN_OTHER_SLIPPY;
+        }
+        if (c <= SFVS_SLIPPY) {
+            f |= TN_OTHER_STARFOX;
+        }
+        if (c != SFVS_KATT) {
+            f |= TN_OTHER_MALE;
+        }
+    }
+    for (i = 0; i < gCamCount; i++) {
+        s32 c = SFModVs_Character(i);
+
+        if (i == speaker) {
+            continue;
+        }
+        if (c == SFVS_FOX) {
+            f |= TN_FOX_THERE;
+        }
+        if (SFModVs_SameTeam(speaker, i)) {
+            if (!sOut[i]) {
+                f |= TN_TEAMMATES;
+            }
+            if (c == SFVS_FOX) {
+                f |= TN_ALLY_FOX;
+            }
+        } else {
+            if (c <= SFVS_SLIPPY) {
+                f |= TN_FOE_STARFOX;
+            }
+            if ((c >= SFVS_WOLF) && (c <= SFVS_LEON)) {
+                f |= TN_FOE_STARWOLF;
+            }
+            if (c == SFVS_PEPPY) {
+                f |= TN_FOE_PEPPY;
+            }
+            if (!sOut[i]) {
+                foes++;
+            }
+        }
+    }
+    if (gSFVs.rule == SFVS_RULE_SURVIVAL) {
+        if (foes == 0) {
+            f |= TN_LAST;
+        } else if (foes == 1) {
+            f |= TN_ONE_LEFT;
+        }
+        if (sOut[speaker]) {
+            f |= TN_OUT;
+        }
+    }
+    return f;
+}
+
+// One line of this pilot for this event (radio idle only, so nobody gets cut off)
+static bool SFModVs_Say(s32 speaker, s32 event, s32 other) {
+    const SFVsLine* pick[32];
+    s32 n = 0;
+    s32 c;
+    u32 flags;
+    s32 i;
+
+    if (!SFModVs_Speaks(speaker) || (gRadioState != 0) || (sWinner != SFVS_NO_WINNER)) {
+        return false;
+    }
+    c = SFModVs_Character(speaker);
+    flags = SFModVs_TalkFlags(speaker, other);
+    for (i = 0; i < ARRAY_COUNT(sLines); i++) {
+        const SFVsLine* l = &sLines[i];
+
+        if ((l->character != c) || (l->event != event) || ((l->needs & ~flags) != 0)) {
+            continue;
+        }
+        if (n < ARRAY_COUNT(pick)) {
+            pick[n++] = l;
+        }
+        if ((l->needs & (TN_PERSONAL | TN_LAST | TN_ONE_LEFT | TN_OUT)) && (n < ARRAY_COUNT(pick))) {
+            pick[n++] = l; // the lines that fit the moment come up more often
+        }
+    }
+    if (n == 0) {
+        return false;
+    }
+    Radio_PlayMessage((u16*) pick[SFModVs_TalkRand(n)]->msg, SFModVs_Rcid(c));
+    sTalker = speaker;
+    sTalkSince = 0;
+    sTalkGap = TALK_GAP + SFModVs_TalkRand(90);
+    sTalkCooldown[speaker] = TALK_COOLDOWN + SFModVs_TalkRand(300);
+    if (sDebug) {
+        printf("[SFVS] %s says something (event %d, about %d)\n", SFModVs_PilotName(speaker), event, other + 1);
+        fflush(stdout);
+    }
+    return true;
+}
+
+static void SFModVs_TalkReset(void) {
+    s32 i;
+
+    sTalkSince = 1000;
+    sTalkGap = 0;
+    sTalkStart = 0;
+    for (i = 0; i < MAX_PLAYERS; i++) {
+        sTalkCooldown[i] = 0;
+        sAttackTicks[i] = sChasedTicks[i] = 0;
+        sAttackTarget[i] = sChasedBy[i] = sLastChaser[i] = -1;
+        sLastChasedFrame[i] = -1000;
+        sTalkPrevHitTimer[i] = 0;
+    }
+    sTalkRng ^= (u32) osGetTime() | 1;
+    // the radio only lets the team talk while their (story) shields are up
+    gTeamShields[TEAM_ID_FALCO] = gTeamShields[TEAM_ID_SLIPPY] = gTeamShields[TEAM_ID_PEPPY] = 255;
+}
+
+// is pilot a on pilot b's tail (close, nose pointing at b)?
+static bool SFModVs_OnTail(s32 a, s32 b) {
+    Player* pa = &gPlayer[a];
+    Player* pb = &gPlayer[b];
+    f32 dx = pb->pos.x - pa->pos.x;
+    f32 dy = pb->pos.y - pa->pos.y;
+    f32 dz = pb->trueZpos - pa->trueZpos;
+    f32 dist = sqrtf(SQ(dx) + SQ(dy) + SQ(dz));
+    f32 speed = sqrtf(SQ(pa->vel.x) + SQ(pa->vel.y) + SQ(pa->vel.z));
+
+    if ((dist > 1800.0f) || (dist < 50.0f) || (speed < 1.0f)) {
+        return false;
+    }
+    return ((dx * pa->vel.x + dy * pa->vel.y + dz * pa->vel.z) / (dist * speed)) > 0.94f;
+}
+
+// someone was shot down (or crashed: killer -1)
+static void SFModVs_TalkOnDeath(s32 victim, s32 killer) {
+    s32 i;
+
+    if (!gSFVs.oshaberi || (sTalkSince < TALK_KILL_GAP)) {
+        return;
+    }
+    // the victim was on a teammate's tail: the teammate thanks the one who saved him
+    if ((killer >= 0) && gSFVs.teams) {
+        for (i = 0; i < gCamCount; i++) {
+            if ((i != killer) && SFModVs_SameTeam(i, killer) && SFModVs_Alive(i) && (sLastChaser[i] == victim) &&
+                ((gGameFrameCount - sLastChasedFrame[i]) < 90) && (SFModVs_TalkRand(100) < 70) &&
+                SFModVs_Say(i, TALK_SAVED, killer)) {
+                return;
+            }
+        }
+    }
+    if ((killer >= 0) && (SFModVs_TalkRand(100) < 60) && SFModVs_Say(killer, TALK_KILL, victim)) {
+        return;
+    }
+    if ((SFModVs_TalkRand(100) < (sOut[victim] ? 85 : 55)) && SFModVs_Say(victim, TALK_DOWN, killer)) {
+        return;
+    }
+    // a teammate cheers
+    if ((killer >= 0) && gSFVs.teams && (SFModVs_TalkRand(100) < 40)) {
+        for (i = 0; i < gCamCount; i++) {
+            if ((i != killer) && SFModVs_SameTeam(i, killer) && SFModVs_Alive(i) && SFModVs_Say(i, TALK_NICE, killer)) {
+                return;
+            }
+        }
+    }
+}
+
+static void SFModVs_UpdateTalk(void) {
+    s32 cand[MAX_PLAYERS * 3];
+    s32 candEvent[MAX_PLAYERS * 3];
+    s32 candOther[MAX_PLAYERS * 3];
+    s32 n = 0;
+    s32 i;
+    s32 j;
+
+    if (!gSFVs.oshaberi) {
+        return;
+    }
+    sTalkSince++;
+    if (sTalkGap > 0) {
+        sTalkGap--;
+    }
+    for (i = 0; i < MAX_PLAYERS; i++) {
+        if (sTalkCooldown[i] > 0) {
+            sTalkCooldown[i]--;
+        }
+    }
+
+    // the match begins: a Star Wolf pilot taunts first, otherwise somebody
+    if ((sTalkStart > 0) && (--sTalkStart == 0)) {
+        for (i = 0; i < gCamCount; i++) {
+            s32 c = SFModVs_Character(i);
+
+            if (SFModVs_Speaks(i) && (c >= SFVS_WOLF) && (c <= SFVS_LEON)) {
+                cand[n++] = i;
+            }
+        }
+        if (n == 0) {
+            for (i = 0; i < gCamCount; i++) {
+                if (SFModVs_Speaks(i)) {
+                    cand[n++] = i;
+                }
+            }
+        }
+        if (n > 0) {
+            SFModVs_Say(cand[SFModVs_TalkRand(n)], TALK_START, -1);
+        }
+        return;
+    }
+
+    // hits
+    for (i = 0; i < gCamCount; i++) {
+        Player* pl = &gPlayer[i];
+
+        if ((pl->hitTimer > sTalkPrevHitTimer[i]) && (pl->shields < 160) && (sTalkGap == 0) &&
+            (sTalkCooldown[i] == 0) && (SFModVs_TalkRand(100) < 25)) {
+            SFModVs_Say(i, TALK_HIT, pl->attacker - 1);
+        }
+        sTalkPrevHitTimer[i] = pl->hitTimer;
+    }
+
+    if ((gGameFrameCount % 15) != 0) {
+        return;
+    }
+    // who is on whose tail
+    for (i = 0; i < gCamCount; i++) {
+        s32 target = -1;
+        s32 chaser = -1;
+
+        if (SFModVs_Alive(i)) {
+            for (j = 0; j < gCamCount; j++) {
+                if ((j == i) || !SFModVs_Alive(j) || SFModVs_SameTeam(i, j)) {
+                    continue;
+                }
+                if (SFModVs_OnTail(i, j)) {
+                    target = j;
+                }
+                if (SFModVs_OnTail(j, i)) {
+                    chaser = j;
+                }
+            }
+        }
+        sAttackTicks[i] = ((target >= 0) && (target == sAttackTarget[i])) ? (sAttackTicks[i] + 1) : 0;
+        sAttackTarget[i] = target;
+        sChasedTicks[i] = ((chaser >= 0) && (chaser == sChasedBy[i])) ? (sChasedTicks[i] + 1) : 0;
+        sChasedBy[i] = chaser;
+        if (chaser >= 0) {
+            sLastChaser[i] = chaser;
+            sLastChasedFrame[i] = gGameFrameCount;
+        }
+    }
+    if ((sTalkGap > 0) || (gRadioState != 0) || (SFModVs_TalkRand(100) >= 35)) {
+        return;
+    }
+    for (i = 0; i < gCamCount; i++) {
+        if (!SFModVs_Speaks(i) || (sTalkCooldown[i] > 0) || !SFModVs_Alive(i)) {
+            continue;
+        }
+        if (sAttackTicks[i] >= 3) {
+            cand[n] = i;
+            candEvent[n] = TALK_ATTACK;
+            candOther[n++] = sAttackTarget[i];
+        }
+        if (sChasedTicks[i] >= 3) {
+            cand[n] = i;
+            candEvent[n] = TALK_CHASED;
+            candOther[n++] = sChasedBy[i];
+        }
+        // a teammate of the human has somebody on his tail
+        if (gSFVs.humanPlays && gSFVs.teams && SFModVs_SameTeam(i, 0) && (sChasedTicks[0] >= 2)) {
+            cand[n] = i;
+            candEvent[n] = TALK_WARN;
+            candOther[n++] = 0;
+        }
+    }
+    if (n > 0) {
+        i = SFModVs_TalkRand(n);
+        SFModVs_Say(cand[i], candEvent[i], candOther[i]);
+    }
+}
+
 static void SFModVs_OnDeath(s32 i) {
     Player* pl = &gPlayer[i];
     char text[48];
@@ -568,6 +1127,7 @@ static void SFModVs_OnDeath(s32 i) {
                killer + 1, (killer >= 0) ? sKills[killer] : 0, sDeaths[i]);
         fflush(stdout);
     }
+    SFModVs_TalkOnDeath(i, ((killer >= 0) && (killer < gCamCount) && (killer != i)) ? killer : -1);
 }
 
 static void SFModVs_UpdatePilots(void) {
@@ -962,6 +1522,8 @@ void SFModVs_Update(void) {
                     gVsMatchStart = true;
                     sGoTimer = 30;
                     sState = SFVS_STATE_FIGHT;
+                    SFModVs_TalkReset();
+                    sTalkStart = 75;
                 }
             }
             break;
@@ -979,6 +1541,7 @@ void SFModVs_Update(void) {
                 }
             }
             SFModVs_UpdatePilots();
+            SFModVs_UpdateTalk();
             SFModVs_CheckLockOnViews();
             if (SFModVs_CheckWinner()) {
                 SFModVs_EndMatch();
@@ -1422,10 +1985,13 @@ void SFModVs_Draw(void) {
                     snprintf(text, sizeof(text), "WATCHING %s  LV%d %s", SFModVs_PilotName(p), gSFVs.pilots[p].level,
                              SFAI_GetPersonality(SFAI_GetPersonalityIndex(p))->name);
                 }
+                // above the radio while somebody talks
+                s32 y = (gRadioState != 0) ? 146 : 206;
+
                 SFModVs_PilotTextColor(p, 255);
-                SFModVs_TextCentered(206, 0.9f, text);
+                SFModVs_TextCentered(y, 0.9f, text);
                 SFModVs_TextColor(200, 200, 200, 255);
-                SFModVs_TextCentered(218, 0.8f, "Z R SWITCH PILOT");
+                SFModVs_TextCentered(y + 12, 0.8f, "Z R SWITCH PILOT");
             }
         } else if (gPlayer[0].state == PLAYERSTATE_VS_STANDBY) {
             SFModVs_TextColor(255, 255, 255, 255);
@@ -1477,6 +2043,7 @@ typedef enum {
     MENU_ROW_RULE,
     MENU_ROW_TARGET,
     MENU_ROW_TEAMS,
+    MENU_ROW_OSHABERI,
     MENU_ROW_ALL_LEVELS,
     MENU_ROW_FIRST_PILOT,
 } SFVsMenuRow;
@@ -1571,6 +2138,9 @@ static void SFModVs_MenuChange(s32 dir) {
             break;
         case MENU_ROW_TEAMS:
             gSFVs.teams = !gSFVs.teams;
+            break;
+        case MENU_ROW_OSHABERI:
+            gSFVs.oshaberi = !gSFVs.oshaberi;
             break;
         case MENU_ROW_ALL_LEVELS: {
             s32 level = SFModVs_AllLevels();
@@ -1731,7 +2301,7 @@ void SFModVs_MenuDraw(void) {
     s32 i;
     const s32 labelX = 40;
     const s32 valueX = 168;
-    const s32 lineH = 10;
+    const s32 lineH = 9;
     const f32 scale = 0.9f;
 
     if (!sMenuOpen) {
@@ -1777,6 +2347,10 @@ void SFModVs_MenuDraw(void) {
             case MENU_ROW_TEAMS:
                 label = "TEAMS";
                 snprintf(text, sizeof(text), "%s", gSFVs.teams ? "ON" : "OFF");
+                break;
+            case MENU_ROW_OSHABERI:
+                label = "OSHABERI";
+                snprintf(text, sizeof(text), "%s", gSFVs.oshaberi ? "ON - THE PILOTS TALK" : "OFF");
                 break;
             case MENU_ROW_ALL_LEVELS: {
                 s32 level = SFModVs_AllLevels();

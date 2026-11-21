@@ -314,7 +314,7 @@ extern s32 gBombCount[MAX_PLAYERS];
 extern s32 gVsPoints[MAX_PLAYERS];
 extern s32 gVsKills[MAX_PLAYERS][10];
 extern s32 gVsMatchWon;
-extern bool gVsMatchStart;
+extern s32 gVsMatchStart; // @mod: was bool, but the game counts it up (1 = match just started, 2 = running)
 extern bool gChangeTo360;
 extern Vec3f gTeamArrowsViewPos[10];
 extern f32 D_ctx_80177F20[65];

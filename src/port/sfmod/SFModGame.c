@@ -210,6 +210,10 @@ uint16_t SFModGame_ScaleActorDamage(void* actorPtr, int32_t sourceId, uint16_t d
     if ((actor->obj.id == OBJ_ACTOR_ALLRANGE) && SFModGame_IsStarWolf(actor->aiType) && (sourceId < 4)) {
         return SFModGame_ScaleBossDamage(damage);
     }
+    // the missiles in Sector Z are as tough as a boss (whoever shoots at them)
+    if ((actor->obj.id == OBJ_ACTOR_ALLRANGE) && (actor->aiType == AI360_MISSILE)) {
+        return SFModGame_ScaleBossDamage(damage);
+    }
     return damage;
 }
 
@@ -538,8 +542,12 @@ void SFModGame_Update(void) {
     }
     SFModGame_UpdateRules();
     if (sStoryAIDebug && ((gGameFrameCount % 300) == 0)) {
-        printf("[SFGame] frame %d: Fox shields %d lives %d state %d\n", gGameFrameCount, gPlayer[0].shields,
-               gLifeCount[0], gPlayer[0].state);
+        printf("[SFGame] frame %d: Fox shields %d lives %d state %d, team %d %d %d, Star Wolf %d %d %d %d (health "
+               "%d %d %d %d)\n",
+               gGameFrameCount, gPlayer[0].shields, gLifeCount[0], gPlayer[0].state, gTeamShields[TEAM_ID_FALCO],
+               gTeamShields[TEAM_ID_SLIPPY], gTeamShields[TEAM_ID_PEPPY], gStarWolfTeamAlive[0],
+               gStarWolfTeamAlive[1], gStarWolfTeamAlive[2], gStarWolfTeamAlive[3], gActors[4].health,
+               gActors[5].health, gActors[6].health, gActors[7].health);
         fflush(stdout);
     }
     if (sStoryAIDebug) {
@@ -662,6 +670,238 @@ void SFModGame_TeamBossHold(void* actorPtr) {
     }
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Dogfights in All-Range Mode (Star Wolf, the team): who fights whom
+ *
+ * In the original every Star Wolf pilot hunts one of Star Fox, the hunted one flees until Fox helps,
+ * and whoever lost his opponent just flies around. From level 2 on both sides pick their fights like
+ * pilots who know what they're doing: the team helps Fox first, then each other, and fights back;
+ * Star Wolf goes for Fox and their rivals, helps each other and comes back after fleeing. The higher
+ * the level, the more often and the quicker. (Katina, Sector Z and the training keep their scripts.)
+ * ------------------------------------------------------------------------------------------------ */
+
+static const s32 sTargetInterval[8] = { 1, 1, 120, 100, 80, 60, 45, 30 };
+static const s32 sTargetCommit[8] = { 0, 0, 240, 210, 180, 150, 120, 100 }; // frames before switching again
+static s32 sTargetSince[ARRAY_COUNT(gActors)];
+static const f32 sTargetInitiative[8] = { 0.0f, 0.0f, 0.35f, 0.5f, 0.65f, 0.8f, 0.9f, 1.0f };
+static const f32 sTargetHelp[8] = { 0.0f, 0.0f, 0.15f, 0.25f, 0.4f, 0.55f, 0.7f, 0.85f };
+
+// the Star Wolf pilot who has it in for this member of Star Fox
+static s32 SFModGame_Rival(s32 aiType) {
+    switch (aiType) {
+        case AI360_LEON:
+            return AI360_FALCO;
+        case AI360_PIGMA:
+            return AI360_PEPPY;
+        case AI360_ANDREW:
+            return AI360_SLIPPY;
+        case AI360_WOLF:
+            return AI360_FOX;
+        default:
+            return -1;
+    }
+}
+
+// in the fight (not arriving, leaving or a missile)
+static bool SFModGame_ActorFights(Actor* o) {
+    return (o->obj.status == OBJ_ACTIVE) && (o->obj.id == OBJ_ACTOR_ALLRANGE) && (o->state != SF360_STATE_ARRIVE) &&
+           (o->state != SF360_STATE_1) && (o->state != SF360_STATE_MISSILE) && (o->state != SF360_STATE_RETREAT) &&
+           (o->aiType < AI360_GREAT_FOX);
+}
+
+static bool SFModGame_FoxFlies(void) {
+    return (gPlayer[0].state == PLAYERSTATE_ACTIVE) || (gPlayer[0].state == PLAYERSTATE_U_TURN);
+}
+
+static bool SFModGame_ValidTarget(s32 t, bool ally) {
+    Actor* o;
+
+    if (ally) {
+        if ((t < AI360_WOLF) || (t >= AI360_GREAT_FOX) || (t == AI360_KATT) || (t == AI360_BILL)) {
+            return false;
+        }
+        o = &gActors[t];
+        // Star Wolf, or an enemy fighter (Katina's own fighters use the same numbers)
+        return SFModGame_ActorFights(o) &&
+               (SFModGame_IsStarWolf(o->aiType) || ((o->aiType >= AI360_ENEMY) && (o->animFrame != 1)));
+    }
+    if (t == AI360_FOX) {
+        return SFModGame_FoxFlies();
+    }
+    if ((t < AI360_FALCO) || (t > AI360_PEPPY)) {
+        return false;
+    }
+    return SFModGame_ActorFights(&gActors[t]) && (gTeamShields[t] > 0);
+}
+
+static void SFModGame_TargetPos(s32 t, Vec3f* pos) {
+    if (t == AI360_FOX) {
+        pos->x = gPlayer[0].pos.x;
+        pos->y = gPlayer[0].pos.y;
+        pos->z = gPlayer[0].trueZpos;
+    } else {
+        *pos = gActors[t].obj.pos;
+    }
+}
+
+// is Fox (who = AI360_FOX) or an actor on this one's tail?
+static bool SFModGame_Chases(s32 who, s32 victim) {
+    Vec3f a;
+    Vec3f b;
+    Vec3f vel;
+    f32 dx;
+    f32 dy;
+    f32 dz;
+    f32 dist;
+    f32 speed;
+
+    if (who != AI360_FOX) {
+        return SFModGame_ActorFights(&gActors[who]) && (gActors[who].state == SF360_STATE_CHASE) &&
+               (gActors[who].aiIndex == victim);
+    }
+    if (!SFModGame_FoxFlies()) {
+        return false;
+    }
+    SFModGame_TargetPos(AI360_FOX, &a);
+    SFModGame_TargetPos(victim, &b);
+    vel = gPlayer[0].vel;
+    dx = b.x - a.x;
+    dy = b.y - a.y;
+    dz = b.z - a.z;
+    dist = sqrtf(SQ(dx) + SQ(dy) + SQ(dz));
+    speed = sqrtf(SQ(vel.x) + SQ(vel.y) + SQ(vel.z));
+    return (dist < 2500.0f) && (dist > 1.0f) && (speed > 1.0f) &&
+           (((dx * vel.x + dy * vel.y + dz * vel.z) / (dist * speed)) > 0.9f);
+}
+
+// how much the actor wants to fight this one
+static f32 SFModGame_TargetScore(Actor* a, s32 t, bool ally) {
+    Vec3f p;
+    f32 score;
+    s32 i;
+
+    SFModGame_TargetPos(t, &p);
+    score = 3000.0f / (sqrtf(SQ(p.x - a->obj.pos.x) + SQ(p.y - a->obj.pos.y) + SQ(p.z - a->obj.pos.z)) + 500.0f);
+    if (ally) {
+        Actor* o = &gActors[t];
+
+        if (o->state == SF360_STATE_CHASE) {
+            if (o->aiIndex == AI360_FOX) {
+                score += (gPlayer[0].shields < 128) ? 6.0f : 4.0f; // Fox needs help
+            } else if ((o->aiIndex >= AI360_FALCO) && (o->aiIndex <= AI360_PEPPY) && (o->aiIndex != a->index)) {
+                score += (gTeamShields[o->aiIndex] < 100) ? 3.5f : 2.5f; // a teammate needs help
+            } else if (o->aiIndex == a->index) {
+                score += 2.0f; // turn the tables
+            }
+        }
+        if (SFModGame_IsStarWolf(o->aiType)) {
+            score += 0.5f;
+        }
+        // spread out
+        for (i = AI360_FALCO; i <= AI360_PEPPY; i++) {
+            if ((i != a->index) && SFModGame_Chases(i, t) && (o->aiIndex != AI360_FOX)) {
+                score -= 1.5f;
+            }
+        }
+    } else {
+        if (t == AI360_FOX) {
+            score += (a->aiType == AI360_WOLF) ? 5.0f : 2.5f;
+        } else {
+            score += 2.0f;
+            if (gTeamShields[t] < 80) {
+                score += 1.0f; // finish it off
+            }
+        }
+        if (SFModGame_Rival(a->aiType) == t) {
+            score += 2.0f;
+        }
+        // help each other: the one on a Star Wolf pilot's tail
+        for (i = AI360_WOLF; i <= AI360_ANDREW; i++) {
+            if ((i != a->index) && SFModGame_ActorFights(&gActors[i]) && SFModGame_Chases(t, i)) {
+                score += 2.5f;
+            }
+        }
+    }
+    return score;
+}
+
+void SFModGame_StoryTargets(void* actorPtr) {
+    Actor* a = (Actor*) actorPtr;
+    s32 level = SFModGame_Difficulty();
+    bool ally;
+    bool hasTarget;
+    s32 best = -1;
+    f32 bestScore = -1000.0f;
+    s32 i;
+
+    if (!gSFRun.active || gVersusMode || (level <= 1) || (gLevelMode != LEVELMODE_ALL_RANGE) ||
+        (gCurrentLevel == LEVEL_TRAINING) || (gCurrentLevel == LEVEL_SECTOR_Z) || (gCurrentLevel == LEVEL_KATINA)) {
+        return;
+    }
+    if ((a->aiType < AI360_FALCO) || (a->aiType > AI360_ANDREW) || ((a - gActors) != a->aiType) ||
+        ((a->state != SF360_STATE_CHASE) && (a->state != SF360_STATE_ROAM))) {
+        return;
+    }
+    if ((gActors[0].state != SF360_STATE_CHASE) || !SFModGame_FoxFlies()) {
+        return; // events, cutscenes
+    }
+    ally = SFModGame_IsAlly(a->aiType);
+    if (ally && (gTeamShields[a->aiType] <= 0)) {
+        return;
+    }
+    if (((gGameFrameCount + a->aiType * 7) % sTargetInterval[level]) != 0) {
+        return;
+    }
+
+    for (i = 0; i < AI360_GREAT_FOX; i++) {
+        f32 score;
+
+        if ((i == a->aiType) || !SFModGame_ValidTarget(i, ally)) {
+            continue;
+        }
+        score = SFModGame_TargetScore(a, i, ally);
+        if (score > bestScore) {
+            bestScore = score;
+            best = i;
+        }
+    }
+    if (best < 0) {
+        return;
+    }
+    hasTarget = (a->state == SF360_STATE_CHASE) && SFModGame_ValidTarget(a->aiIndex, ally);
+    if (hasTarget) {
+        // stick to a fight for a while, switch only for a clearly better one (helping Fox, ...)
+        if ((best == a->aiIndex) || ((gGameFrameCount - sTargetSince[a->aiType]) < sTargetCommit[level]) ||
+            (bestScore < SFModGame_TargetScore(a, a->aiIndex, ally) + 2.5f) ||
+            (SFModGame_RandF() >= sTargetHelp[level])) {
+            return;
+        }
+    } else if (SFModGame_RandF() >= sTargetInitiative[level]) {
+        return;
+    }
+    if (sStoryAIDebug) {
+        printf("[SFGame] %d now fights %d (score %.1f, had %d in state %d)\n", a->aiType, best, bestScore, a->aiIndex,
+               a->state);
+        fflush(stdout);
+    }
+    a->aiIndex = best;
+    a->state = SF360_STATE_CHASE;
+    a->iwork[2] = AI360_FOX;
+    a->counter_04E = 0;
+    sTargetSince[a->aiType] = gGameFrameCount;
+}
+
+// From level 2 on the team takes less damage, the higher the level the less (better pilots dodge more,
+// also in the scripted scenes of the missions on rails)
+int32_t SFModGame_ScaleTeamDamage(int32_t damage) {
+    s32 level = SFModGame_Difficulty();
+
+    if (!gSFRun.active || gVersusMode || (level <= 1) || (damage <= 0)) {
+        return damage;
+    }
+    return SFModGame_RoundRandom(damage * (1.0f - 0.06f * (level - 1)));
+}
+
 // The new AI in the dogfights: Star Wolf and the enemy fighters on the chosen level, the team as
 // decent wingmen. Difficulty 1 keeps the original AI.
 bool SFModGame_StoryAI(void* actorPtr, bool fighting, int32_t* fire, int32_t* move) {
@@ -693,15 +933,15 @@ bool SFModGame_StoryAI(void* actorPtr, bool fighting, int32_t* fire, int32_t* mo
         evade = true;
         personality = gSFRun.personality[SFModGame_RunCharacter(a->aiType)];
     } else if (SFModGame_IsAlly(a->aiType)) {
-        // the team flies well, whatever the level
-        skill = 4;
-        evade = false;
+        // the team flies as well as the level says (as well as Star Wolf), and from level 3 on it dodges
+        skill = level;
+        evade = level >= 3;
         personality = gSFRun.personality[SFModGame_RunCharacter(a->aiType)];
     } else {
         skill = level;
         evade = level >= 4;
     }
-    SFAI_ActorThink(a, skill, personality, evade, fighting, &order);
+    SFAI_ActorThink(a, skill, personality, evade, fighting, SFModGame_IsAlly(a->aiType), &order);
     *fire = order.fire ? 1 : 0;
     *move = order.move;
 

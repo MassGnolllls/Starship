@@ -363,7 +363,7 @@ s32 gBombCount[MAX_PLAYERS];
 s32 gVsPoints[MAX_PLAYERS];
 s32 gVsKills[MAX_PLAYERS][10];
 s32 gVsMatchWon;
-bool gVsMatchStart;
+s32 gVsMatchStart; // @mod: was bool (see sf64context.h)
 bool gChangeTo360;
 Vec3f gTeamArrowsViewPos[10];
 // f32 D_ctx_80177F20[65]; // Seem to be an early implementation of RadarMark

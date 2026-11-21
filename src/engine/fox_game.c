@@ -625,6 +625,7 @@ void Game_Update(void) {
 
         if ((gGameState == GSTATE_PLAY) && gVersusMode) {
             if (SFModVs_Active()) { // @mod
+                Radio_Draw(); // the pilots talk ("Oshaberi" setting)
                 SFModVs_Draw();
             } else {
                 Versus_Draw();

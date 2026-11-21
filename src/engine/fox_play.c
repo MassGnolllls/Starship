@@ -5557,7 +5557,8 @@ void Player_UpdateEffects(Player* player) {
     if (player->dmgEffectTimer != 0) {
         gFillScreenAlphaStep = 8;
     }
-    if (player->dmgEffectTimer == 19) {
+    // @mod: VS CPU mode: like the normal game, only the hits of the pilot on screen flash the screen red
+    if ((player->dmgEffectTimer == 19) && (!SFModVs_Active() || (player->num == SFModVs_ViewedPlayer()))) {
         gFillScreenAlpha = 128;
         gFillScreenRed = 255;
         gFillScreenGreen = gFillScreenBlue = 0;
@@ -5624,12 +5625,15 @@ void Player_UpdateEffects(Player* player) {
 
 void Player_UpdateShields(Player* player) {
     if (player->damage > 0) {
-        player->damage -= 2;
+        // @mod: VS CPU mode: the damage of a hit shows twice as fast (hits come quicker there)
+        s32 step = (SFModVs_Active() && (player->damage >= 4)) ? 4 : 2;
+
+        player->damage -= step;
         if (player->damage <= 0) {
             player->damage = 0;
         }
         if (!CVarGetInteger("gInvincible", 0)) {
-            player->shields -= 2;
+            player->shields -= step;
         }
         if (player->shields <= 0) {
             player->shields = 0;
