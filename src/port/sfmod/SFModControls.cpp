@@ -245,6 +245,10 @@ void ControlsWindow::DrawElement() {
                          "Brake and Auto tilt at once, like holding both keys: very tight turns.\n"
                          "Press twice quickly for a barrel roll.",
                          SFMOD_BTN_BRAKE_TILT);
+        DrawButtonAction("Boost + auto tilt",
+                         "Boost and Auto tilt at once, like holding both keys.\n"
+                         "Press twice quickly for a barrel roll.",
+                         SFMOD_BTN_BOOST_TILT);
         DrawButtonAction("Change view", "Cockpit view / behind the ship", BTN_CUP);
         DrawButtonAction("Answer radio", "Talk to ROB / answer incoming messages", BTN_CRIGHT);
         DrawButtonAction("Pause / skip cutscene", nullptr, BTN_START);

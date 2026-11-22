@@ -285,7 +285,7 @@ static bool sAutoTiltWasHeld[4]; // an auto tilt input was held last frame
 static s32 sAutoTiltTapFrame[4] = { -1000, -1000, -1000, -1000 }; // frame of the last press of an auto tilt input
 
 static u32 SFMod_AutoTiltInputs(void) {
-    u32 inputs = SFMOD_BTN_TURBO_TILT | SFMOD_BTN_BRAKE_TILT;
+    u32 inputs = SFMOD_BTN_TURBO_TILT | SFMOD_BTN_BRAKE_TILT | SFMOD_BTN_BOOST_TILT;
 
     if (CVarGetInteger("gLtoCharge", 0) != 1) {
         inputs |= L_TRIG; // with "Hold L to Charge" L is the charge button
@@ -321,11 +321,17 @@ static void SFMod_ProcessAutoTilt(s32 port, u32 rawHold, u32 rawPress) {
     }
     sAutoTiltTapped[port] = 0;
 
-    // "brake + auto tilt" brakes
+    // "brake + auto tilt" brakes, "boost + auto tilt" boosts
     if ((player != NULL) && (rawHold & SFMOD_BTN_BRAKE_TILT)) {
         hold->button |= gBrakeButton[player->num];
         if (rawPress & SFMOD_BTN_BRAKE_TILT) {
             press->button |= gBrakeButton[player->num];
+        }
+    }
+    if ((player != NULL) && (rawHold & SFMOD_BTN_BOOST_TILT)) {
+        hold->button |= gBoostButton[player->num];
+        if (rawPress & SFMOD_BTN_BOOST_TILT) {
+            press->button |= gBoostButton[player->num];
         }
     }
 
@@ -528,9 +534,10 @@ static void SFMod_OnGameUpdatePost(IEvent* event) {
 
     sDebugFrames++;
     if ((sDebugFrames % 30) == 0) {
-        printf("[SFMod] second %d: shots=%d fastForwardFrames=%d rolls=%d bank=%.0f tilt=%d\n", sDebugFrames / 30,
-               sDebugShots, sDebugFastFrames, sDebugRolls,
-               ((gGameState == GSTATE_PLAY) && (gPlayer != NULL)) ? gPlayer[0].zRotBank : 0.0f, sAutoTiltSide[0]);
+        printf("[SFMod] second %d: shots=%d fastForwardFrames=%d rolls=%d bank=%.0f tilt=%d boost=%.0f\n",
+               sDebugFrames / 30, sDebugShots, sDebugFastFrames, sDebugRolls,
+               ((gGameState == GSTATE_PLAY) && (gPlayer != NULL)) ? gPlayer[0].zRotBank : 0.0f, sAutoTiltSide[0],
+               ((gGameState == GSTATE_PLAY) && (gPlayer != NULL)) ? gPlayer[0].boostMeter : 0.0f);
         fflush(stdout);
         sDebugShots = 0;
         sDebugFastFrames = 0;

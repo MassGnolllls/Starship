@@ -84,6 +84,12 @@ typedef struct SFAIState {
     SFAIMode mode;
     s32 target;      // player index or -1
     s32 itemTarget;  // gItems index or -1
+    f32 itemDesire;  // how much it wants that item (SFAI_ChooseItem)
+    f32 itemDist;
+    s32 approachK;   // the line it flies along into an item that can't be reached straight (-1: none)
+    bool onApproach; // on that line
+    f32 bombNearest; // own smart bomb in flight: the nearest enemy last frame (detonation timing)
+    s32 bombTimer;   // frames until it may press the bomb button again
     bool fleeing;
     Vec3f aimPoint;  // where it wants to fly (world), updated every frame
     Vec3f wander;    // a misjudged offset of the aim point (low levels)
@@ -197,6 +203,9 @@ static f32 SFAI_AngleTo(Vec3f* fwd, Vec3f* dir) {
     return acosf(d) * M_RTOD;
 }
 
+static bool SFAI_BombSlotFree(void);
+static void SFAI_ItemAim(SFAIState* ai, s32 me, Vec3f* itemPos, Vec3f* aim);
+
 static bool SFAI_PlayerAlive(s32 i) {
     Player* pl = &gPlayer[i];
 
@@ -250,6 +259,8 @@ void SFAI_Reset(int32_t playerNum, int32_t level, int32_t personality, uint32_t 
 
     ai->target = -1;
     ai->itemTarget = -1;
+    ai->approachK = -1;
+    ai->bombNearest = 99999.0f;
     ai->thinkTimer = SFAI_Rand(ai) % 8;
     ai->cooldown = 60 + SFAI_Rand(ai) % 60;
 }
@@ -298,50 +309,88 @@ static s32 SFAI_ChooseTarget(SFAIState* ai, s32 me) {
     return best;
 }
 
+// What an item is worth to a pilot (0: nothing). In VS a smart bomb uses up all bombs and a bomb only
+// appears while nobody has one, so one bomb is all a pilot needs. A bomb does 80 damage to every enemy
+// in its blast; twin lasers have a hit box twice as wide.
+static f32 SFAI_ItemValue(s32 pilot, Item* item) {
+    Player* pl = &gPlayer[pilot];
+
+    switch (item->obj.id) {
+        case OBJ_ITEM_BOMB:
+            return (gBombCount[pilot] == 0) ? 1.0f : 0.0f;
+        case OBJ_ITEM_LASERS:
+            if (gLaserStrength[pilot] == LASERS_SINGLE) {
+                return 0.8f;
+            }
+            return (gLaserStrength[pilot] < LASERS_HYPER) ? 0.4f : 0.0f;
+        case OBJ_ITEM_SILVER_RING:
+        case OBJ_ITEM_SILVER_STAR:
+        case OBJ_ITEM_GOLD_RING:
+            return (pl->shields < 200) ? ((255 - pl->shields) / 255.0f) : 0.0f;
+        case OBJ_ITEM_WING_REPAIR:
+            return ((pl->arwing.rightWingState != WINGSTATE_INTACT) || (pl->arwing.leftWingState != WINGSTATE_INTACT))
+                       ? 0.5f
+                       : 0.0f;
+        default:
+            return 0.0f;
+    }
+}
+
+// The item most worth a detour: its value, how greedy and how good the pilot is, how far away it is.
+// Good pilots don't race for an item another pilot will clearly get first.
 static s32 SFAI_ChooseItem(SFAIState* ai, s32 me) {
     Player* self = &gPlayer[me];
-    Vec3f d;
+    f32 levelFrac = ai->level / 6.0f;
     s32 best = -1;
-    f32 bestDist = 1200.0f + 2300.0f * ai->p.greed;
+    f32 bestDesire = 0.0f;
+    f32 bestDist = 0.0f;
     s32 i;
+    s32 j;
 
     for (i = 0; i < ARRAY_COUNT(gItems); i++) {
         Item* item = &gItems[i];
-        bool wanted = false;
+        Vec3f d;
+        f32 value;
         f32 dist;
+        f32 desire;
+        bool lost = false;
 
-        if (item->obj.status != OBJ_ACTIVE) {
+        if ((item->obj.status != OBJ_ACTIVE) || item->collected) {
             continue;
         }
-        switch (item->obj.id) {
-            case OBJ_ITEM_LASERS:
-                wanted = gLaserStrength[me] < LASERS_HYPER;
-                break;
-            case OBJ_ITEM_BOMB:
-                wanted = gBombCount[me] < 9;
-                break;
-            case OBJ_ITEM_SILVER_RING:
-            case OBJ_ITEM_SILVER_STAR:
-            case OBJ_ITEM_GOLD_RING:
-                wanted = self->shields < (s32) (140.0f + 100.0f * ai->p.greed);
-                break;
-            case OBJ_ITEM_WING_REPAIR:
-                wanted = (self->arwing.rightWingState != WINGSTATE_INTACT) ||
-                         (self->arwing.leftWingState != WINGSTATE_INTACT);
-                break;
-            default:
-                break;
-        }
-        if (!wanted) {
+        value = SFAI_ItemValue(me, item);
+        if (value <= 0.0f) {
             continue;
         }
         SFAI_Delta(&self->pos, &item->obj.pos, &d);
         dist = SFAI_Len(&d);
-        if (dist < bestDist) {
+        if (ai->level >= 2) {
+            for (j = 0; j < gCamCount; j++) {
+                Vec3f dj;
+                f32 other;
+
+                if ((j == me) || !SFAI_PlayerAlive(j) || (SFAI_ItemValue(j, item) <= 0.0f)) {
+                    continue;
+                }
+                SFAI_Delta(&gPlayer[j].pos, &item->obj.pos, &dj);
+                other = SFAI_Len(&dj);
+                if ((other < dist * 0.6f) && (dist - other > 1500.0f)) {
+                    lost = true;
+                }
+            }
+        }
+        if (lost) {
+            continue;
+        }
+        desire = value * (0.4f + ai->p.greed) * (0.5f + 0.5f * levelFrac) * 6000.0f / (dist + 1000.0f);
+        if (desire > bestDesire) {
+            bestDesire = desire;
             bestDist = dist;
             best = i;
         }
     }
+    ai->itemDesire = bestDesire;
+    ai->itemDist = bestDist;
     return best;
 }
 
@@ -445,9 +494,12 @@ static bool SFAI_TargetHasCompany(s32 target, s32 me) {
 // so keep the nose on the target until it hits.
 static bool SFAI_Guiding(s32 me) {
     PlayerShot* homing = &gPlayerShots[PLAYERSHOT_LOCKON_SLOT(me)];
+    PlayerShot* bomb = &gPlayerShots[PLAYERSHOT_BOMB_SLOT]; // a smart bomb fired at a locked target homes in too
     s32 i;
 
-    if ((homing->obj.status != SHOT_ACTIVE) || (homing->obj.id != PLAYERSHOT_LOCK_ON) || (homing->unk_60 != 0)) {
+    if (!((homing->obj.status == SHOT_ACTIVE) && (homing->obj.id == PLAYERSHOT_LOCK_ON) && (homing->unk_60 == 0)) &&
+        !((bomb->obj.status == SHOT_ACTIVE) && (bomb->obj.id == PLAYERSHOT_LOCK_ON) && (bomb->sourceId == me) &&
+          (bomb->unk_60 == 0))) {
         return false;
     }
     for (i = 0; i < gCamCount; i++) {
@@ -569,18 +621,32 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
         ai->cooldown = 75 + (s32) ((1.0f - skill) * 150.0f);
     }
 
-    if ((ai->itemTarget >= 0) && (ai->level >= 4) && (gLaserStrength[me] == LASERS_SINGLE) &&
-        (gItems[ai->itemTarget].obj.id == OBJ_ITEM_LASERS) && (ai->best || (SFAI_RandF(ai) < 0.5f))) {
-        // twin lasers have a hit box twice as wide: worth a detour
-        ai->mode = MODE_ITEM;
-        ai->wantBoost = true;
-        return;
+    // items: worth a detour unless a fight is about to pay off (a target close in front)
+    ai->itemTarget = SFAI_ChooseItem(ai, me);
+    if ((ai->itemTarget >= 0) && !guiding) {
+        f32 need = 0.5f;
+        bool busy = false;
+
+        if ((ai->mode == MODE_ATTACK) && (ai->target >= 0)) {
+            Vec3f fwd;
+
+            SFAI_Forward(self, &fwd);
+            busy = (dist < 1400.0f) && (SFAI_AngleTo(&fwd, &d) < 30.0f) && (SFAI_RandF(ai) > ai->p.greed * 0.5f);
+        }
+        if (ai->fleeing || (ai->target < 0)) {
+            need = 0.25f;
+        }
+        if (ai->mode == MODE_ITEM) {
+            need *= 0.6f; // stay on it
+        }
+        if (!busy && (ai->itemDesire > need)) {
+            ai->mode = MODE_ITEM;
+            ai->wantBoost = ai->wantBoost || ((ai->itemDist > 1500.0f) && (SFAI_RandF(ai) < 0.3f + 0.7f * ai->p.boost));
+            return;
+        }
     }
-    if ((ai->mode != MODE_ATTACK) && (ai->itemTarget >= 0) &&
-        (ai->fleeing || (ai->mode == MODE_ITEM) || (SFAI_RandF(ai) < ai->p.greed * 0.35f) || (ai->target < 0))) {
-        ai->mode = MODE_ITEM;
-        ai->wantBoost = ai->wantBoost || (SFAI_RandF(ai) < ai->p.boost * 0.5f);
-        return;
+    if (ai->mode == MODE_ITEM) {
+        ai->mode = MODE_PATROL; // decided below
     }
     if (ai->target < 0) {
         ai->mode = MODE_PATROL;
@@ -622,6 +688,10 @@ static void SFAI_Decide(SFAIState* ai, s32 me) {
             // a direct hit only does laser damage (the target is then immune to the blast), but the
             // blast hurts everybody else near it, and the homing reaches targets lasers can't
             chance = SFAI_TargetHasCompany(ai->target, me) ? 1.0f : 0.0f;
+        }
+        if ((gBombCount[me] > 0) && SFAI_BombSlotFree()) {
+            // a smart bomb fired at a locked target homes in: the best use of a bomb
+            chance = SFAI_MAXF(chance, ai->best ? 1.0f : (0.15f + 0.35f * ai->p.bomb) * (0.5f + 0.5f * ai->level / 6.0f));
         }
         if ((ai->maneuver == MANEUVER_NONE) && slotFree && (dist > 450.0f) && (dist < 9000.0f) &&
             (ai->cooldown == 0) && (SFAI_AngleTo(&fwd, &d) < 75.0f) && (SFAI_RandF(ai) < chance)) {
@@ -717,7 +787,7 @@ static void SFAI_UpdateAim(SFAIState* ai, s32 me) {
             break;
 
         case MODE_ITEM:
-            ai->aimPoint = gItems[ai->itemTarget].obj.pos;
+            SFAI_ItemAim(ai, me, &gItems[ai->itemTarget].obj.pos, &ai->aimPoint);
             break;
 
         case MODE_PATROL:
@@ -728,61 +798,533 @@ static void SFAI_UpdateAim(SFAIState* ai, s32 me) {
             break;
     }
 
-    ai->aimPoint.x += ai->wander.x;
-    ai->aimPoint.z += ai->wander.z;
+    if (ai->mode != MODE_ITEM) {
+        ai->aimPoint.x += ai->wander.x;
+        ai->aimPoint.z += ai->wander.z;
+    }
 }
 
 /* ------------------------------------------------------------------------------------------------
  * Flying (every frame)
  * ------------------------------------------------------------------------------------------------ */
 
-// Avoid the ground, the ceiling and buildings: adjusts the wanted direction.
-static void SFAI_AvoidObstacles(Player* self, Vec3f* dir, bool* climb) {
+// The boxes things collide with (the scenery's hitboxes in world space). Scenery without hitboxes
+// (the VS pyramids, which use polygon collision) is one box as wide as it is at the height y.
+typedef struct {
+    f32 cx, cy, cz; // center (world)
+    f32 hx, hy, hz; // half sizes (in the box's own directions)
+    f32 c, s;       // the box's yaw: local (x, z) = (wx * c - wz * s, wx * s + wz * c)
+} SFAIBox;
+
+#define SFAI_MAX_BOXES 8
+
+static s32 SFAI_SceneryBoxes(Scenery360* scn, SFAIBox* out, f32 y) {
+    f32* data = scn->info.hitbox;
+    f32 rot = scn->obj.rot.y * M_DTOR;
+    f32 c = cosf(rot);
+    f32 sn = sinf(rot);
+    s32 count;
+    s32 n = 0;
+    s32 i;
+
+    if ((data == NULL) || ((s32) data[0] <= 0)) {
+        // polygon collision: the pyramids get narrower towards the top (sizes of their models)
+        f32 half = 450.0f;
+        f32 height = 1200.0f;
+        f32 up;
+
+        if (scn->obj.id == OBJ_SCENERY_VS_PYRAMID_1) {
+            half = 498.0f;
+            height = 705.0f;
+        } else if (scn->obj.id == OBJ_SCENERY_VS_PYRAMID_2) {
+            half = 623.0f;
+            height = 200.0f;
+        }
+        up = SFAI_Clamp((y - 50.0f - scn->obj.pos.y) / height, 0.0f, 1.0f);
+        out[0].cx = scn->obj.pos.x;
+        out[0].cy = scn->obj.pos.y + height * 0.5f;
+        out[0].cz = scn->obj.pos.z;
+        out[0].hx = out[0].hz = half * (1.0f - up) + 30.0f;
+        out[0].hy = height * 0.5f;
+        out[0].c = c;
+        out[0].s = sn;
+        return 1;
+    }
+    count = (s32) data[0];
+    data++;
+    for (i = 0; (i < count) && (n < SFAI_MAX_BOXES); i++) {
+        bool rotated = false;
+        f32 ox;
+        f32 oz;
+        SFAIBox* b = &out[n];
+
+        if (data[0] == HITBOX_ROTATED) {
+            rotated = true;
+            data += 4;
+        } else if (data[0] >= HITBOX_SHADOW) {
+            data++;
+        }
+        // z offset/size, y offset/size, x offset/size
+        ox = data[4];
+        oz = data[0];
+        b->cx = scn->obj.pos.x + ox * c + oz * sn;
+        b->cz = scn->obj.pos.z - ox * sn + oz * c;
+        b->cy = scn->obj.pos.y + data[2];
+        b->hy = data[3];
+        b->c = c;
+        b->s = sn;
+        if (rotated) {
+            // a box with its own rotation: a cube around it
+            b->hx = b->hz = SFAI_MAXF(SFAI_MAXF(data[5], data[1]), data[3]) * 1.42f;
+            b->hy = b->hx;
+            b->c = 1.0f;
+            b->s = 0.0f;
+        } else {
+            b->hx = data[5];
+            b->hz = data[1];
+        }
+        data += 6;
+        n++;
+    }
+    return n;
+}
+
+// Where along the segment p -> p + d (0..1) it enters the rectangle (XZ), or -1
+static f32 SFAI_SegmentRect(f32 px, f32 pz, f32 dx, f32 dz, f32 minX, f32 maxX, f32 minZ, f32 maxZ) {
+    f32 t0 = 0.0f;
+    f32 t1 = 1.0f;
+    f32 p[2] = { px, pz };
+    f32 d[2] = { dx, dz };
+    f32 lo[2] = { minX, minZ };
+    f32 hi[2] = { maxX, maxZ };
+    s32 k;
+
+    for (k = 0; k < 2; k++) {
+        if (fabsf(d[k]) < 0.0001f) {
+            if ((p[k] < lo[k]) || (p[k] > hi[k])) {
+                return -1.0f;
+            }
+        } else {
+            f32 a = (lo[k] - p[k]) / d[k];
+            f32 b = (hi[k] - p[k]) / d[k];
+
+            if (a > b) {
+                f32 tmp = a;
+
+                a = b;
+                b = tmp;
+            }
+            t0 = SFAI_MAXF(t0, a);
+            t1 = SFAI_MINF(t1, b);
+            if (t0 > t1) {
+                return -1.0f;
+            }
+        }
+    }
+    return t0;
+}
+
+// Where the segment p -> p + d (XZ) enters the box grown by margin (0..1), or -1
+static f32 SFAI_SegmentBox(SFAIBox* b, f32 px, f32 pz, f32 dx, f32 dz, f32 margin) {
+    f32 wx = SFAI_WrapArena(px - b->cx); // the box as seen from p (the arena wraps)
+    f32 wz = SFAI_WrapArena(pz - b->cz);
+    f32 lx = wx * b->c - wz * b->s;
+    f32 lz = wx * b->s + wz * b->c;
+    f32 ldx = dx * b->c - dz * b->s;
+    f32 ldz = dx * b->s + dz * b->c;
+
+    return SFAI_SegmentRect(lx, lz, ldx, ldz, -b->hx - margin, b->hx + margin, -b->hz - margin, b->hz + margin);
+}
+
+// Is the straight way from a (at height y) by the vector d blocked by scenery? margin: room to keep.
+static bool SFAI_PathBlocked(Vec3f* a, Vec3f* d, f32 y, f32 margin) {
+    s32 i;
+
+    if (gScenery360 == NULL) {
+        return false;
+    }
+    for (i = 0; i < 200; i++) {
+        Scenery360* scn = &gScenery360[i];
+        SFAIBox boxes[SFAI_MAX_BOXES];
+        s32 n;
+        s32 j;
+
+        if ((scn->obj.status != OBJ_ACTIVE) || (scn->obj.id == OBJ_SCENERY_LEVEL_OBJECTS)) {
+            continue;
+        }
+        n = SFAI_SceneryBoxes(scn, boxes, y);
+        for (j = 0; j < n; j++) {
+            SFAIBox* b = &boxes[j];
+
+            if ((y > b->cy + b->hy + 40.0f) || (y < b->cy - b->hy - 40.0f)) {
+                continue; // above or below it
+            }
+            if (SFAI_SegmentBox(b, a->x, a->z, d->x, d->z, margin) >= 0.0f) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Avoid the ground, the ceiling and the scenery: adjusts the wanted direction. Only what is in the way
+// before the aim point counts, so it flies between buildings and under arches to an item there.
+static void SFAI_AvoidObstacles(Player* self, Vec3f* dir, f32 aimLen, bool lowOk, bool* climb, bool* dive) {
     Vec3f fwd;
+    f32 floorY = SFAI_MAXF(gGroundHeight, self->pathFloor);
+    f32 fx;
+    f32 fz;
+    f32 flen;
+    f32 look = SFAI_MINF(1800.0f, aimLen + 150.0f);
+    f32 dirLen = SFAI_Len(dir);
     s32 i;
 
     SFAI_Forward(self, &fwd);
 
-    if (self->pos.y < gGroundHeight + 250.0f) {
+    if (self->pos.y < floorY + (lowOk ? 40.0f : 210.0f)) {
         *climb = true;
     }
 
     if (gScenery360 == NULL) {
         return;
     }
+    flen = sqrtf(SQ(fwd.x) + SQ(fwd.z));
+    if (flen < 0.01f) {
+        return;
+    }
+    fx = fwd.x / flen;
+    fz = fwd.z / flen;
     for (i = 0; i < 200; i++) {
         Scenery360* scn = &gScenery360[i];
-        Vec3f d;
-        f32 ahead;
-        f32 side;
-        f32 height;
-        f32 radius;
+        SFAIBox boxes[SFAI_MAX_BOXES];
+        s32 n;
+        s32 j;
 
-        if (scn->obj.status != OBJ_ACTIVE) {
-            continue;
+        if ((scn->obj.status != OBJ_ACTIVE) || (scn->obj.id == OBJ_SCENERY_LEVEL_OBJECTS)) {
+            continue; // the VS arenas' item spawn points: invisible, nothing to fly into
         }
-        SFAI_Delta(&self->pos, &scn->obj.pos, &d);
-        ahead = fwd.x * d.x + fwd.z * d.z;
-        if ((ahead < 0.0f) || (ahead > 1800.0f)) {
-            continue;
-        }
-        side = fwd.x * d.z - fwd.z * d.x;
-        radius = 450.0f;
-        height = 1200.0f;
-        if ((scn->info.hitbox != NULL) && ((s32) scn->info.hitbox[0] > 0)) {
-            // hitbox: count, then z offset/size, y offset/size, x offset/size
-            radius = SFAI_MAXF(scn->info.hitbox[6], scn->info.hitbox[2]) + 200.0f;
-            height = scn->info.hitbox[3] + scn->info.hitbox[4] + 250.0f;
-        }
-        if ((fabsf(side) < radius) && (self->pos.y < scn->obj.pos.y + height)) {
-            // steer to the side we are already on, and up
-            f32 push = (side > 0.0f) ? -1.0f : 1.0f;
+        n = SFAI_SceneryBoxes(scn, boxes, self->pos.y);
+        for (j = 0; j < n; j++) {
+            SFAIBox* b = &boxes[j];
+            f32 bx = self->pos.x + SFAI_WrapArena(b->cx - self->pos.x);
+            f32 bz = self->pos.z + SFAI_WrapArena(b->cz - self->pos.z);
+            const f32 margin = 70.0f;
+            f32 t;
+            f32 dist;
+            f32 side;
+            f32 push;
+            f32 strength;
 
-            dir->x += -fwd.z * push * 2.0f * SFAI_Len(dir);
-            dir->z += fwd.x * push * 2.0f * SFAI_Len(dir);
-            if (ahead < 900.0f) {
-                *climb = true;
+            if ((self->pos.y > b->cy + b->hy + 40.0f) || (self->pos.y < b->cy - b->hy - 40.0f)) {
+                continue; // flies above or below it
             }
+            t = SFAI_SegmentBox(b, self->pos.x, self->pos.z, fx * look, fz * look, margin);
+            if (t < 0.0f) {
+                continue;
+            }
+            dist = t * look;
+            // steer away from the box's center, harder the closer it is
+            side = fx * (bz - self->pos.z) - fz * (bx - self->pos.x);
+            push = (side > 0.0f) ? -1.0f : 1.0f;
+            strength = 0.6f + 2.0f * (1.0f - dist / look);
+            dir->x += -fz * push * strength * dirLen;
+            dir->z += fx * push * strength * dirLen;
+            if (dist < 900.0f) {
+                // over it or under it, if there is room
+                f32 top = b->cy + b->hy + 80.0f;
+                f32 bottom = b->cy - b->hy - 80.0f;
+                bool over = top < self->pathHeight - 80.0f;
+                bool under = bottom > floorY + (lowOk ? 70.0f : 140.0f);
+
+                if (under && (!over || (self->pos.y - bottom < top - self->pos.y))) {
+                    *dive = true;
+                } else if (over || !under) {
+                    *climb = true;
+                }
+            }
+        }
+    }
+}
+
+// The way to an item: straight if nothing is in the way, otherwise along a clear line into it (an item
+// under an arch is reached by flying through the arches). It flies onto the line like a car onto a road:
+// at a point ahead on the line, farther ahead the farther away it is, so it joins it smoothly.
+#define SFAI_APPROACH_LEN 3000.0f
+
+// An item that lies in a piece of scenery (Sector Z's space junk) is picked up from beside it: the
+// point just outside the scenery (an item is picked up within ~120 of it).
+static void SFAI_ItemPickupPoint(Vec3f* item, Vec3f* out) {
+    s32 i;
+
+    *out = *item;
+    if (gScenery360 == NULL) {
+        return;
+    }
+    for (i = 0; i < 200; i++) {
+        Scenery360* scn = &gScenery360[i];
+        SFAIBox boxes[SFAI_MAX_BOXES];
+        s32 n;
+        s32 j;
+
+        if ((scn->obj.status != OBJ_ACTIVE) || (scn->obj.id == OBJ_SCENERY_LEVEL_OBJECTS)) {
+            continue;
+        }
+        n = SFAI_SceneryBoxes(scn, boxes, out->y);
+        for (j = 0; j < n; j++) {
+            SFAIBox* b = &boxes[j];
+            f32 wx = SFAI_WrapArena(out->x - b->cx);
+            f32 wz = SFAI_WrapArena(out->z - b->cz);
+            f32 dx = wx * b->c - wz * b->s; // in the box's frame
+            f32 dy = out->y - b->cy;
+            f32 dz = wx * b->s + wz * b->c;
+            f32 ex;
+            f32 ey;
+            f32 ez;
+
+            if ((fabsf(dx) > b->hx + 50.0f) || (fabsf(dy) > b->hy + 40.0f) || (fabsf(dz) > b->hz + 50.0f)) {
+                continue;
+            }
+            // leave it by the shortest way (sideways rather than up or down)
+            ex = b->hx + 80.0f - fabsf(dx);
+            ey = b->hy + 60.0f - fabsf(dy) + 40.0f;
+            ez = b->hz + 80.0f - fabsf(dz);
+            if ((ex <= ey) && (ex <= ez)) {
+                dx += (dx >= 0.0f) ? ex : -ex;
+            } else if (ez <= ey) {
+                dz += (dz >= 0.0f) ? ez : -ez;
+            } else {
+                out->y += (dy >= 0.0f) ? (ey - 40.0f) : -(ey - 40.0f);
+            }
+            // back to the world: (wx, wz) = (dx * c + dz * s, -dx * s + dz * c)
+            out->x = b->cx + dx * b->c + dz * b->s;
+            out->z = b->cz - dx * b->s + dz * b->c;
+        }
+    }
+}
+
+static void SFAI_ItemAim(SFAIState* ai, s32 me, Vec3f* itemObjPos, Vec3f* aim) {
+    Player* self = &gPlayer[me];
+    Vec3f pickup;
+    Vec3f* itemPos = &pickup;
+    Vec3f d;
+    Vec3f fwd;
+    f32 bestCost = 1e9f;
+    s32 bestK = -1;
+    f32 bestAlong = 0.0f;
+    f32 bestPerp = 0.0f;
+    f32 flen;
+    s32 k;
+
+    ai->onApproach = false;
+    SFAI_ItemPickupPoint(itemObjPos, &pickup);
+    SFAI_Delta(&self->pos, itemPos, &d);
+    if (!SFAI_PathBlocked(&self->pos, &d, itemPos->y, 60.0f)) {
+        *aim = *itemPos;
+        ai->approachK = -1;
+        return;
+    }
+    SFAI_Forward(self, &fwd);
+    flen = sqrtf(SQ(fwd.x) + SQ(fwd.z));
+    if (flen > 0.01f) {
+        fwd.x /= flen;
+        fwd.z /= flen;
+    }
+    for (k = 0; k < 8; k++) {
+        f32 ang = k * 45.0f * M_DTOR;
+        f32 ux = -sinf(ang); // into the item
+        f32 uz = -cosf(ang);
+        Vec3f start;
+        Vec3f in;
+        Vec3f rel;
+        f32 along;
+        f32 perp;
+        f32 cost;
+
+        start.x = itemPos->x - ux * SFAI_APPROACH_LEN;
+        start.y = itemPos->y;
+        start.z = itemPos->z - uz * SFAI_APPROACH_LEN;
+        in.x = ux * SFAI_APPROACH_LEN;
+        in.y = 0.0f;
+        in.z = uz * SFAI_APPROACH_LEN;
+        if (SFAI_PathBlocked(&start, &in, itemPos->y, 60.0f)) {
+            continue;
+        }
+        SFAI_Delta(&start, &self->pos, &rel);
+        along = rel.x * ux + rel.z * uz;
+        perp = fabsf(rel.x * uz - rel.z * ux);
+        // close to the line, with room to join it before the item, already heading along it
+        cost = perp + SFAI_MAXF(-along, 0.0f) * 0.5f + (1.0f - (fwd.x * ux + fwd.z * uz)) * 800.0f;
+        if (along > 1800.0f) {
+            cost += 3000.0f + (along - 1800.0f); // too close to the item to join the line: go back out
+        }
+        if (k != ai->approachK) {
+            cost += 500.0f; // keep the line it already flies to
+        }
+        if (cost < bestCost) {
+            bestCost = cost;
+            bestK = k;
+            bestAlong = along;
+            bestPerp = perp;
+        }
+    }
+    if (bestK < 0) {
+        *aim = *itemPos; // no clear line: try anyway
+        ai->approachK = -1;
+        return;
+    }
+    ai->approachK = bestK;
+    {
+        f32 ang = bestK * 45.0f * M_DTOR;
+        f32 ux = -sinf(ang);
+        f32 uz = -cosf(ang);
+        f32 at;
+
+        if ((bestPerp < 900.0f) && (bestAlong < 1800.0f + bestPerp)) {
+            // join the line at a point ahead on it, farther ahead the farther off it is
+            at = SFAI_MINF(bestAlong + SFAI_MAXF(800.0f, bestPerp * 1.5f), SFAI_APPROACH_LEN + 600.0f);
+            at = SFAI_MAXF(at, 0.0f);
+        } else {
+            at = 0.0f; // to the start of the line
+        }
+        aim->x = itemPos->x - ux * (SFAI_APPROACH_LEN - at);
+        aim->y = itemPos->y;
+        aim->z = itemPos->z - uz * (SFAI_APPROACH_LEN - at);
+        ai->onApproach = (bestPerp < 150.0f) && (bestAlong > -300.0f) && (bestAlong < SFAI_APPROACH_LEN + 200.0f);
+    }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Smart bombs. In VS a bomb flies 180 units a frame along the nose and explodes when it hits a pilot,
+ * when its time is up (37 frames) or when its owner presses the bomb button again (from its 13th frame
+ * on). The blast grows to a radius of 1800 and does 80 damage to every enemy in it. Fired while locked
+ * on, the bomb homes in on the locked target. Only one bomb can fly at a time.
+ * ------------------------------------------------------------------------------------------------ */
+
+#define SFAI_BOMB_SPEED 180.0f
+#define SFAI_BOMB_DETONATE_AFTER 13.0f // frames (the game takes the button from shot->timer < 25 on)
+
+static bool SFAI_BombSlotFree(void) {
+    return gPlayerShots[PLAYERSHOT_BOMB_SLOT].obj.status == SHOT_FREE;
+}
+
+// Would a bomb fired now along the nose catch somebody? It is set off next to the target, which works
+// from the bomb's 13th frame on (~2400 away). (At 180 units a frame it mostly flies through a ship
+// without hitting it, so it isn't aimed for a direct hit.) Never into scenery.
+static bool SFAI_BombShotGood(SFAIState* ai, s32 me, Vec3f* fwd) {
+    Player* self = &gPlayer[me];
+    f32 levelFrac = ai->level / 6.0f;
+    s32 j;
+
+    for (j = 0; j < gCamCount; j++) {
+        Vec3f d;
+        Vec3f path;
+        f32 t;
+        f32 along;
+        f32 px;
+        f32 py;
+        f32 pz;
+        f32 perp;
+        bool good;
+
+        if ((j == me) || !SFAI_PlayerAlive(j) || SFModVs_SameTeam(j, me)) {
+            continue;
+        }
+        SFAI_Delta(&self->pos, &gPlayer[j].pos, &d);
+        t = SFAI_Len(&d) / SFAI_BOMB_SPEED;
+        d.x += gPlayer[j].vel.x * t;
+        d.y += gPlayer[j].vel.y * t;
+        d.z += gPlayer[j].vel.z * t;
+        along = d.x * fwd->x + d.y * fwd->y + d.z * fwd->z;
+        if (along < 400.0f) {
+            continue;
+        }
+        px = d.x - fwd->x * along;
+        py = d.y - fwd->y * along;
+        pz = d.z - fwd->z * along;
+        perp = sqrtf(SQ(px) + SQ(py) + SQ(pz));
+        // worse pilots take worse chances
+        good = (along >= SFAI_BOMB_SPEED * (SFAI_BOMB_DETONATE_AFTER + 1.0f)) && (along < 4200.0f) &&
+               (perp < 450.0f + 400.0f * (1.0f - levelFrac));
+        if (!good) {
+            continue;
+        }
+        path.x = fwd->x * along;
+        path.y = 0.0f;
+        path.z = fwd->z * along;
+        if (!SFAI_PathBlocked(&self->pos, &path, self->pos.y, 0.0f)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void SFAI_Bombs(SFAIState* ai, s32 me, u16* buttons, Vec3f* fwd) {
+    PlayerShot* bomb = &gPlayerShots[PLAYERSHOT_BOMB_SLOT];
+    f32 levelFrac = ai->level / 6.0f;
+    u16 bombButton = gBombButton[me];
+    s32 j;
+
+    if (ai->bombTimer > 0) {
+        ai->bombTimer--;
+        return; // let go of the button between two presses
+    }
+
+    // our bomb flies: set it off where it catches the most (the blast keeps growing for a while,
+    // so an enemy up to ~1100 away from it is caught)
+    if ((bomb->obj.status == SHOT_ACTIVE) && (bomb->obj.id == PLAYERSHOT_BOMB) && (bomb->sourceId == me) &&
+        (bomb->unk_5C == 0)) {
+        f32 nearest = 99999.0f;
+
+        for (j = 0; j < gCamCount; j++) {
+            Vec3f d;
+            f32 dist;
+
+            if ((j == me) || !SFAI_PlayerAlive(j) || SFModVs_SameTeam(j, me)) {
+                continue;
+            }
+            SFAI_Delta(&bomb->obj.pos, &gPlayer[j].pos, &d);
+            dist = SFAI_Len(&d);
+            if (dist < nearest) {
+                nearest = dist;
+            }
+        }
+        if ((bomb->timer < 25) && (ai->level >= 2) &&
+            ((nearest < 450.0f) || ((nearest < 1100.0f) && (nearest > ai->bombNearest + 5.0f)))) {
+            *buttons |= bombButton;
+            ai->bombTimer = 4;
+            if (sAIDebug) {
+                printf("[SFAI] %d sets off its bomb, nearest enemy %.0f\n", me + 1, nearest);
+                fflush(stdout);
+            }
+        }
+        ai->bombNearest = nearest;
+        return;
+    }
+    ai->bombNearest = 99999.0f;
+
+    if ((gBombCount[me] <= 0) || !SFAI_BombSlotFree() || (ai->maneuver == MANEUVER_CHARGE)) {
+        return;
+    }
+
+    // locked on (a charged shot found somebody): the bomb homes in on that pilot
+    for (j = 0; j < gCamCount; j++) {
+        if ((j != me) && !SFModVs_SameTeam(j, me) && (gVsLockOnTimers[j][me] != 0)) {
+            if (ai->best || (SFAI_RandF(ai) < (0.2f + 0.3f * ai->p.bomb) * (0.4f + 0.6f * levelFrac))) {
+                *buttons |= bombButton;
+                ai->bombTimer = 4;
+            }
+            return;
+        }
+    }
+
+    // without a lock: straight at a target in front, or close to it and set it off
+    if ((ai->mode == MODE_ATTACK) && (ai->target >= 0) && SFAI_BombShotGood(ai, me, fwd) &&
+        (ai->best || (SFAI_RandF(ai) < (0.03f + 0.12f * ai->p.bomb) * (0.4f + 0.6f * levelFrac)))) {
+        *buttons |= bombButton;
+        ai->bombTimer = 4;
+        if (sAIDebug) {
+            printf("[SFAI] %d fires a bomb without lock, target %d dist %.0f\n", me + 1, ai->target + 1, ai->aimDist);
+            fflush(stdout);
         }
     }
 }
@@ -804,6 +1346,11 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
     f32 floorY;
     f32 rotYWanted;
     bool climb = false;
+    bool dive = false;
+    bool lowOk;
+    bool highOk;
+    f32 aimLen;
+    f32 rawHeading;
     f32 invert = (CVarGetInteger("gInvertYAxis", 0) == 1) ? -1.0f : 1.0f;
 
     *hold = 0;
@@ -831,19 +1378,28 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
 
     // where to fly
     SFAI_Delta(&self->pos, &ai->aimPoint, &dir);
-    SFAI_AvoidObstacles(self, &dir, &climb);
+    aimLen = SFAI_Len(&dir);
+    rawHeading = SFAI_Heading(dir.x, dir.z);
+    floorY = SFAI_MAXF(gGroundHeight, self->pathFloor);
+    // items lie low (or high): fly down (up) to them
+    lowOk = (ai->mode == MODE_ITEM) && (ai->aimPoint.y < floorY + 250.0f) && (aimLen < 3500.0f);
+    highOk = (ai->mode == MODE_ITEM) && (ai->aimPoint.y > self->pathHeight - 200.0f) && (aimLen < 3500.0f);
+    SFAI_AvoidObstacles(self, &dir, (ai->mode == MODE_ITEM) && ai->onApproach ? SFAI_MINF(aimLen, 700.0f) : aimLen,
+                        lowOk, &climb, &dive);
     SFAI_Forward(self, &fwd);
 
-    headingWanted = SFAI_Heading(dir.x, dir.z) + ai->aimNoiseX;
+    headingWanted = SFAI_Heading(dir.x, dir.z) + ((ai->mode == MODE_ITEM) ? 0.0f : ai->aimNoiseX);
     horiz = sqrtf(SQ(dir.x) + SQ(dir.z));
-    pitchWanted = atan2f(dir.y, horiz) * M_RTOD + ai->aimNoiseY;
+    pitchWanted = atan2f(dir.y, horiz) * M_RTOD + ((ai->mode == MODE_ITEM) ? 0.0f : ai->aimNoiseY);
 
     // keep inside the arena's height (VS arenas are flat: the ceiling is only ~650 above the floor)
-    floorY = SFAI_MAXF(gGroundHeight, self->pathFloor);
-    if (climb || (self->pos.y < floorY + 110.0f)) {
+    if (dive && !climb) {
+        pitchWanted = SFAI_MINF(pitchWanted, -20.0f);
+    }
+    if (climb || (self->pos.y < floorY + (lowOk ? 60.0f : 110.0f))) {
         pitchWanted = SFAI_MAXF(pitchWanted, climb ? 30.0f : 15.0f);
     }
-    if (self->pos.y > self->pathHeight - 110.0f) {
+    if (self->pos.y > self->pathHeight - (highOk ? 50.0f : 110.0f)) {
         pitchWanted = SFAI_MINF(pitchWanted, -5.0f);
     }
     pitchWanted = SFAI_Clamp(pitchWanted, -38.0f, 38.0f);
@@ -865,6 +1421,16 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
         ai->wantBoost = false;
     } else if ((ai->mode == MODE_ATTACK) && (fabsf(yawErr) < 30.0f)) {
         ai->wantBrake = ai->wantBrake && (ai->aimDist < 600.0f);
+    }
+
+    // an item close by but off to the side: brake to turn tighter instead of circling around it
+    if ((ai->mode == MODE_ITEM) && (ai->maneuver == MANEUVER_NONE) && (ai->level >= 1)) {
+        if ((aimLen < 1300.0f) && (fabsf(yawErr) > 35.0f)) {
+            ai->wantBrake = true;
+            ai->wantBoost = false;
+        } else if (aimLen < 700.0f) {
+            ai->wantBoost = false;
+        }
     }
 
     // long turns: tilt into the turn like a good player (turns twice as fast)
@@ -960,7 +1526,8 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
                     ai->rollDir = 2; // let go, fire in two frames
                     ai->maneuverFrame = 100;
                 } else if ((ai->maneuverFrame > sChargePatience[ai->level]) || (ai->target < 0) || (tangle > 110.0f) ||
-                           (ai->mode != MODE_ATTACK) || ((ai->level >= 3) && (ai->aimDist < 1100.0f))) {
+                           (ai->mode != MODE_ATTACK) ||
+                           ((ai->level >= 3) && (ai->aimDist < 1100.0f) && (gBombCount[playerNum] == 0))) {
                     // (in laser range lasers do the same damage without waiting for a lock)
                     // no lock: fire the charged shot anyway only when it points at a close target
                     if ((ai->maneuverFrame > 21) && (tangle < 5.0f) && (ai->aimDist < 1500.0f)) {
@@ -976,8 +1543,10 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
             if (ai->maneuverFrame < 100) {
                 buttons |= A_BUTTON;
             } else if (ai->maneuverFrame == 102) {
-                if (locked && (gBombCount[playerNum] > 0) && (SFAI_RandF(ai) < ai->p.bomb * 0.5f)) {
-                    buttons |= B_BUTTON;
+                if (locked && (gBombCount[playerNum] > 0) && SFAI_BombSlotFree() &&
+                    (ai->best || (SFAI_RandF(ai) < (0.4f + 0.6f * ai->p.bomb) * (0.6f + 0.4f * ai->level / 6.0f)))) {
+                    buttons |= gBombButton[playerNum]; // the homing smart bomb
+                    ai->bombTimer = 4;
                 } else {
                     buttons |= A_BUTTON;
                 }
@@ -1022,16 +1591,7 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
         }
     }
 
-    // smart bomb when locked on, or now and then at a close target in front
-    if ((gBombCount[playerNum] > 0) && (ai->target >= 0) && (ai->cooldown == 0) && (ai->mode == MODE_ATTACK)) {
-        bool locked = gVsLockOnTimers[ai->target][playerNum] != 0;
-
-        if ((locked || (ai->wantFire && (ai->aimDist < 1500.0f) && (SFAI_RandF(ai) < 0.02f))) &&
-            (SFAI_RandF(ai) < ai->p.bomb * 0.25f)) {
-            buttons |= B_BUTTON;
-            ai->cooldown = 45;
-        }
-    }
+    SFAI_Bombs(ai, playerNum, &buttons, &fwd);
 
     *hold = buttons;
     *stickX = (s8) SFAI_Clamp(sx, -60.0f, 60.0f);
@@ -1045,9 +1605,12 @@ void SFAI_Think(int32_t playerNum, uint16_t* hold, int8_t* stickX, int8_t* stick
     if (sAIDebug && (++ai->debugTimer >= 30)) {
         ai->debugTimer = 0;
         printf("[SFAI] %d mode %d tgt %d dist %.0f t %.0f yawErr %.1f pitch %.1f/%.1f y %.0f (%.0f..%.0f) fire %d man %d "
-               "stick %d %d btn %04x\n",
+               "stick %d %d btn %04x item %d desire %.2f idist %.0f aim %.0f\n",
                playerNum + 1, ai->mode, ai->target + 1, ai->aimDist, ai->aimTime, yawErr, pitchWanted, pitchNow,
-               self->pos.y, floorY, self->pathHeight, ai->wantFire, ai->maneuver, *stickX, *stickY, buttons);
+               self->pos.y, floorY, self->pathHeight, ai->wantFire, ai->maneuver, *stickX, *stickY, buttons,
+               ai->itemTarget, ai->itemDesire, ai->itemDist, aimLen);
+        printf("[SFAI] %d avoid %.1f pos %.0f %.0f %.0f climb %d\n", playerNum + 1,
+               SFAI_Wrap180(SFAI_Heading(dir.x, dir.z) - rawHeading), self->pos.x, self->pos.y, self->pos.z, climb);
         fflush(stdout);
     }
 }

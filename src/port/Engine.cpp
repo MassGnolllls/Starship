@@ -182,9 +182,10 @@ GameEngine::GameEngine() {
         // SDLAxisDirectionToAxisDirectionMappings - use built-in LUS defaults
         std::unordered_map<Ship::StickIndex, std::vector<std::pair<Ship::Direction, std::pair<SDL_GameControllerAxis, int32_t>>>>()
     );
-    // @mod: extra mappable buttons (turbo fire, swap fire buttons, turbo/brake + auto tilt), see SFMod.h
+    // @mod: extra mappable buttons (turbo fire, swap fire buttons, turbo/brake/boost + auto tilt), see SFMod.h
     auto controlDeck = std::make_shared<LUS::ControlDeck>(
-        std::vector<CONTROLLERBUTTONS_T>({ SFMOD_BTN_TURBO, SFMOD_BTN_SWAP, SFMOD_BTN_TURBO_TILT, SFMOD_BTN_BRAKE_TILT }),
+        std::vector<CONTROLLERBUTTONS_T>(
+            { SFMOD_BTN_TURBO, SFMOD_BTN_SWAP, SFMOD_BTN_TURBO_TILT, SFMOD_BTN_BRAKE_TILT, SFMOD_BTN_BOOST_TILT }),
         defaultMappings);
 
     this->context->InitResourceManager(archiveFiles, {}, 3); // without this line InitWindow fails in Gui::Init()

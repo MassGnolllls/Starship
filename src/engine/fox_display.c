@@ -1957,6 +1957,7 @@ void Display_Update(void) {
     Matrix_Push(&gGfxMatrix);
     Matrix_LookAt(gGfxMatrix, gPlayCamEye.x, gPlayCamEye.y, gPlayCamEye.z, gPlayCamAt.x, gPlayCamAt.y, gPlayCamAt.z,
                   playerCamUp.x, playerCamUp.y, playerCamUp.z, MTXF_APPLY);
+    SFModVs_SetViewMatrix(gGfxMatrix); // @mod: VS CPU mode team marks
 
     if ((gLevelType == LEVELTYPE_PLANET) || (gCurrentLevel == LEVEL_BOLSE)) {
         if ((gCurrentLevel == LEVEL_TITANIA) &&
@@ -2069,6 +2070,7 @@ void Display_Update(void) {
     BonusText_DrawAll();
     Matrix_Pop(&gGfxMatrix);
     Display_ActorMarks();
+    SFModVs_DrawTeamMarks(); // @mod: VS CPU mode: arrows above the teammates
     Display_LockOnIndicator();
 
     if (sDrawCockpit) {

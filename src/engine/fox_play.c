@@ -1030,6 +1030,7 @@ void Player_ApplyDamage(Player* player, s32 direction, s32 damage) {
             Player_PlaySfx(player->sfxSource, NA_SE_DAMAGE_L, player->num);
         }
     }
+    SFModVs_OnPilotDamaged(player->num); // @mod: VS CPU mode: hits on other pilots sound like hits on Star Wolf
 
     Matrix_RotateY(gCalcMatrix, player->yRot_114 * M_DTOR, MTXF_NEW);
     Matrix_RotateZ(gCalcMatrix, player->bankAngle * M_DTOR, MTXF_APPLY);
@@ -7084,6 +7085,11 @@ u8 sVsItemSpawnIndex = -1;
 
 void Play_SpawnVsItem(ObjectId objId, Item* item) {
     u8 spawnIndex = (u8) RAND_FLOAT(5.0f);
+
+    if (SFModVs_TestItemSpawn() >= 0) { // @mod: automated tests
+        spawnIndex = SFModVs_TestItemSpawn();
+        sVsItemSpawnIndex = 255;
+    }
 
     if (sVsItemSpawnIndex == spawnIndex) {
         gVsItemSpawnTimer--;

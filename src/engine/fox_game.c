@@ -501,6 +501,7 @@ void Game_Update(void) {
                 Audio_SetVolume(AUDIO_TYPE_MUSIC, gVolumeSettings[AUDIO_TYPE_MUSIC]);
                 Audio_SetVolume(AUDIO_TYPE_VOICE, gVolumeSettings[AUDIO_TYPE_VOICE]);
                 Audio_SetVolume(AUDIO_TYPE_SFX, gVolumeSettings[AUDIO_TYPE_SFX]);
+                SFModVs_AfterBootInit(); // @mod: automated VS tests keep their stage (reset above)
                 break;
 
             case GSTATE_TITLE:

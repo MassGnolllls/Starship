@@ -72,6 +72,12 @@ bool SFModVs_SameTeam(int32_t a, int32_t b);
 void SFModVs_GetPlayerColor(int32_t playerNum, uint8_t* r, uint8_t* g, uint8_t* b);
 const char* SFModVs_CharacterName(int32_t character);
 int32_t SFModVs_Character(int32_t playerNum);
+// a pilot took damage: hits on the other pilots sound like hits on Star Wolf in the missions
+void SFModVs_OnPilotDamaged(int32_t playerNum);
+// the camera matrix of the drawn view (Display_Update), for the team marks
+void SFModVs_SetViewMatrix(const void* mtx);
+// team matches: the story mode's arrows above the viewed pilot's teammates (eye space, like Display_ActorMarks)
+void SFModVs_DrawTeamMarks(void);
 
 // main menu screen (VS card)
 void SFModVs_MenuUpdate(void);
@@ -87,6 +93,8 @@ void SFModVs_OnMatchExit(void);
 
 // Automated testing (environment variables), see SFModVs.c
 bool SFModVs_TestBoot(void);
+void SFModVs_AfterBootInit(void);
+int32_t SFModVs_TestItemSpawn(void); // -1, or the spawn point all VS items use (SFMOD_TEST_VS_ITEMSPAWN)
 
 #ifdef __cplusplus
 }

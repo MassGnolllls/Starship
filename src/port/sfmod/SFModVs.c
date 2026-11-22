@@ -7,6 +7,7 @@
 #include "global.h"
 #include "assets/ast_common.h"
 #include "assets/ast_radio.h"
+#include "port/interpolation/FrameInterpolation.h"
 #include "port/mods/PortEnhancements.h"
 
 /*
@@ -277,6 +278,204 @@ int32_t SFModVs_Character(int32_t playerNum) {
 
 static const char* SFModVs_PilotName(s32 i) {
     return SFModVs_CharacterName(gSFVs.pilots[i].character);
+}
+
+// Testing switches (environment variables), looked up once
+static bool SFModVs_TestFlag(const char* name) {
+    static const char* sNames[4];
+    static bool sValues[4];
+    s32 i;
+
+    for (i = 0; i < ARRAY_COUNT(sNames); i++) {
+        if (sNames[i] == name) {
+            return sValues[i];
+        }
+        if (sNames[i] == NULL) {
+            sNames[i] = name;
+            sValues[i] = getenv(name) != NULL;
+            return sValues[i];
+        }
+    }
+    return getenv(name) != NULL;
+}
+
+// Hits on Star Wolf in the missions play the enemy damage sound at the enemy. The VS mode only has the
+// hit pilot's own damage sound, which is only heard for the watched pilot (SFModVs_HearsSfx).
+static s32 sHitSfx = 0; // debug statistics
+
+void SFModVs_OnPilotDamaged(int32_t playerNum) {
+    if (SFModVs_Active() && (playerNum >= 0) && (playerNum < gCamCount) && (playerNum != SFModVs_ViewedPlayer())) {
+        AUDIO_PLAY_SFX(NA_SE_EN_DAMAGE_S, gPlayer[playerNum].sfxSource, 4);
+        sHitSfx++;
+    }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Team marks: the arrows the story mode shows above Falco, Slippy and Peppy, here above the watched
+ * pilot's teammates: an arrow in the team color with the pilot's initial, drawn like Display_ActorMarks.
+ * ------------------------------------------------------------------------------------------------ */
+
+static Matrix sViewMtx;
+static bool sViewMtxSet = false;
+static s32 sMarksDrawn = 0; // debug statistics
+
+void SFModVs_SetViewMatrix(const void* mtx) {
+    if (SFModVs_Active() && (mtx != NULL)) {
+        memcpy(&sViewMtx, mtx, sizeof(Matrix));
+        sViewMtxSet = true;
+    }
+}
+
+// 5x5 letters like the ones of the story marks (bit 4 = left column)
+static const struct {
+    char letter;
+    u8 rows[5];
+} sMarkGlyphs[] = {
+    { 'F', { 0x1F, 0x10, 0x1E, 0x10, 0x10 } }, { 'P', { 0x1F, 0x11, 0x1F, 0x10, 0x10 } },
+    { 'S', { 0x1F, 0x10, 0x1F, 0x01, 0x1F } }, { 'W', { 0x11, 0x11, 0x15, 0x1B, 0x11 } },
+    { 'A', { 0x0E, 0x11, 0x1F, 0x11, 0x11 } }, { 'L', { 0x10, 0x10, 0x10, 0x10, 0x1F } },
+    { 'B', { 0x1E, 0x11, 0x1F, 0x11, 0x1E } }, { 'K', { 0x12, 0x14, 0x18, 0x14, 0x12 } },
+};
+
+#define SFVS_MARK_TEX 16
+// RGBA16 textures (big endian like the N64's), one per team color and character
+static u8 sMarkTex[SFVS_TEAM_COUNT + 1][SFVS_CHARACTER_COUNT][SFVS_MARK_TEX * SFVS_MARK_TEX * 2];
+static bool sMarkTexReady[SFVS_TEAM_COUNT + 1][SFVS_CHARACTER_COUNT];
+
+// the triangle of the story marks (pointing down), texture coordinates in 1/32 texels
+static Vtx sMarkVtx[3] = {
+    { { { 0, -107, 0 }, 0, { 240, 627 }, { 255, 255, 255, 255 } } },
+    { { { 80, 53, 0 }, 0, { 496, 115 }, { 255, 255, 255, 255 } } },
+    { { { -80, 53, 0 }, 0, { -15, 115 }, { 255, 255, 255, 255 } } },
+};
+
+static u16 SFModVs_Rgba16(u8 r, u8 g, u8 b) {
+    return ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | 1;
+}
+
+static u8* SFModVs_MarkTexture(s32 team, s32 character) {
+    enum { BG, OUTLINE, WHITE, GRAY };
+    u8 kind[SFVS_MARK_TEX][SFVS_MARK_TEX];
+    const u8* rows = sMarkGlyphs[0].rows;
+    const u8* c;
+    u8* tex;
+    u16 colors[4];
+    char letter;
+    s32 x;
+    s32 y;
+    s32 i;
+
+    team = CLAMP(team, 0, SFVS_TEAM_COUNT);
+    character = CLAMP(character, 0, SFVS_CHARACTER_COUNT - 1);
+    tex = sMarkTex[team][character];
+    if (sMarkTexReady[team][character]) {
+        return tex;
+    }
+
+    letter = SFModVs_CharacterName(character)[0];
+    for (i = 0; i < ARRAY_COUNT(sMarkGlyphs); i++) {
+        if (sMarkGlyphs[i].letter == letter) {
+            rows = sMarkGlyphs[i].rows;
+        }
+    }
+    memset(kind, BG, sizeof(kind));
+    // the letter (white) at 5..9 with a gray shadow on the right of every run
+    for (y = 0; y < 5; y++) {
+        for (x = 0; x < 5; x++) {
+            if (rows[y] & (0x10 >> x)) {
+                kind[5 + y][5 + x] = WHITE;
+            }
+        }
+        for (x = 0; x < 5; x++) {
+            if ((rows[y] & (0x10 >> x)) && ((x == 4) || !(rows[y] & (0x10 >> (x + 1))))) {
+                kind[5 + y][6 + x] = GRAY;
+            }
+        }
+    }
+    // a black outline around it
+    for (y = 1; y < SFVS_MARK_TEX - 1; y++) {
+        for (x = 1; x < SFVS_MARK_TEX - 1; x++) {
+            s32 dx;
+            s32 dy;
+
+            if (kind[y][x] != BG) {
+                continue;
+            }
+            for (dy = -1; dy <= 1; dy++) {
+                for (dx = -1; dx <= 1; dx++) {
+                    if ((kind[y + dy][x + dx] == WHITE) || (kind[y + dy][x + dx] == GRAY)) {
+                        kind[y][x] = OUTLINE;
+                    }
+                }
+            }
+        }
+    }
+
+    c = sTeamColors[team];
+    colors[BG] = SFModVs_Rgba16(c[0], c[1], c[2]);
+    colors[OUTLINE] = SFModVs_Rgba16(0, 0, 0);
+    colors[WHITE] = SFModVs_Rgba16(248, 248, 248);
+    colors[GRAY] = SFModVs_Rgba16(136, 136, 136);
+    for (y = 0; y < SFVS_MARK_TEX; y++) {
+        for (x = 0; x < SFVS_MARK_TEX; x++) {
+            u16 col = colors[kind[y][x]];
+
+            tex[(y * SFVS_MARK_TEX + x) * 2] = col >> 8;
+            tex[(y * SFVS_MARK_TEX + x) * 2 + 1] = col & 0xFF;
+        }
+    }
+    sMarkTexReady[team][character] = true;
+    return tex;
+}
+
+void SFModVs_DrawTeamMarks(void) {
+    s32 viewed = SFModVs_ViewedPlayer();
+    s32 i;
+
+    if (!SFModVs_Active() || !gSFVs.teams || !sViewMtxSet || (gPlayer == NULL) || (sState != SFVS_STATE_FIGHT) ||
+        (((gGameFrameCount & 4) != 0) && !SFModVs_TestFlag("SFMOD_TEST_VS_MARKS_SOLID"))) { // they blink like this
+        return;
+    }
+
+    RCP_SetupDL_40();
+    gDPSetTextureFilter(gMasterDisp++, G_TF_POINT);
+    for (i = 0; i < gCamCount; i++) {
+        Player* pl = &gPlayer[i];
+        Vec3f world;
+        Vec3f view;
+        f32 scale;
+
+        if ((i == viewed) || !SFModVs_SameTeam(i, viewed) || (pl->state != PLAYERSTATE_ACTIVE && pl->state != PLAYERSTATE_U_TURN)) {
+            continue;
+        }
+        world.x = pl->pos.x;
+        world.y = pl->pos.y;
+        world.z = pl->trueZpos + gPathProgress;
+        Matrix_MultVec3f(&sViewMtx, &world, &view);
+        if ((view.z > -300.0f) || (view.z < -12000.0f) || (fabsf(view.x) > -view.z * 1.6f) ||
+            (fabsf(view.y) > -view.z)) {
+            continue; // behind or right next to the camera, too far away, or out of the picture
+        }
+        scale = sqrtf(SQ(view.x) + SQ(view.y) + SQ(view.z)) * 0.0015f;
+        scale = CLAMP(scale, 1.0f, 100.0f);
+
+        sMarksDrawn++;
+        FrameInterpolation_RecordOpenChild("SFVsTeamMark", i);
+        Matrix_Push(&gGfxMatrix);
+        Matrix_Translate(gGfxMatrix, view.x, view.y, view.z, MTXF_APPLY);
+        Matrix_Scale(gGfxMatrix, scale * 0.25f, scale * 0.25f, 1.0f, MTXF_APPLY);
+        Matrix_Translate(gGfxMatrix, 0.0f, 150.0f, 0.0f, MTXF_APPLY);
+        Matrix_SetGfxMtx(&gMasterDisp);
+        gDPSetTextureLUT(gMasterDisp++, G_TT_NONE);
+        gDPLoadTextureBlock(gMasterDisp++, SFModVs_MarkTexture(gSFVs.pilots[i].team, gSFVs.pilots[i].character),
+                            G_IM_FMT_RGBA, G_IM_SIZ_16b, SFVS_MARK_TEX, SFVS_MARK_TEX, 0, G_TX_NOMIRROR | G_TX_CLAMP,
+                            G_TX_NOMIRROR | G_TX_CLAMP, 4, 4, G_TX_NOLOD, G_TX_NOLOD);
+        gSPVertex(gMasterDisp++, sMarkVtx, 3, 0);
+        gSP1Triangle(gMasterDisp++, 0, 1, 2, 0);
+        Matrix_Pop(&gGfxMatrix);
+        FrameInterpolation_RecordCloseChild();
+    }
+    gDPSetTextureFilter(gMasterDisp++, G_TF_BILERP);
 }
 
 static bool SFModVs_Alive(s32 i) {
@@ -1386,14 +1585,74 @@ static void SFModVs_DebugLog(void) {
         }
     }
 
+    // items: when they appear and who gets them
+    {
+        static s32 sItemStatus[ARRAY_COUNT(gItems)];
+        static s32 sItemAge[ARRAY_COUNT(gItems)];
+
+        for (i = 0; i < ARRAY_COUNT(gItems); i++) {
+            Item* item = &gItems[i];
+            s32 status = item->obj.status;
+
+            if ((status == OBJ_ACTIVE) && (sItemStatus[i] != OBJ_ACTIVE)) {
+                sItemAge[i] = 0;
+                printf("[SFVS] item %d (%s) appears at %.0f %.0f %.0f\n", i,
+                       (item->obj.id == OBJ_ITEM_BOMB) ? "bomb" : "lasers", item->obj.pos.x, item->obj.pos.y,
+                       item->obj.pos.z);
+            } else if (status == OBJ_ACTIVE) {
+                sItemAge[i]++;
+                if (item->collected && (item->state == 1) && (item->timer_48 == 19)) {
+                    printf("[SFVS] item %d (%s) collected by %d after %d frames\n", i,
+                           (item->obj.id == OBJ_ITEM_BOMB) ? "bomb" : "lasers", item->playerNum + 1, sItemAge[i]);
+                }
+            }
+            sItemStatus[i] = status;
+        }
+    }
+    // smart bombs: fired (homing or not), where they explode
+    {
+        static s32 sBombId = -1;
+        static s32 sBombPhase = -1;
+        static s32 sBombAge;
+        PlayerShot* bomb = &gPlayerShots[PLAYERSHOT_BOMB_SLOT];
+        s32 id = (bomb->obj.status == SHOT_ACTIVE) ? bomb->obj.id : -1;
+        s32 phase = (id >= 0) ? bomb->unk_5C : -1;
+
+        if ((id >= 0) && (sBombId < 0)) {
+            sBombAge = 0;
+            printf("[SFVS] bomb fired by %d (%s)\n", bomb->sourceId + 1, (id == PLAYERSHOT_LOCK_ON) ? "homing" : "straight");
+        } else if (id >= 0) {
+            sBombAge++;
+        }
+        if ((id == PLAYERSHOT_BOMB) && (phase == 1) && (sBombPhase != 1)) {
+            f32 nearest = 99999.0f;
+            s32 j;
+
+            for (j = 0; j < gCamCount; j++) {
+                f32 dx = gPlayer[j].pos.x - bomb->obj.pos.x;
+                f32 dy = gPlayer[j].pos.y - bomb->obj.pos.y;
+                f32 dz = gPlayer[j].trueZpos - bomb->obj.pos.z;
+                f32 dist = sqrtf(SQ(dx) + SQ(dy) + SQ(dz));
+
+                if ((j != bomb->sourceId) && !SFModVs_SameTeam(j, bomb->sourceId) && SFModVs_Alive(j) && (dist < nearest)) {
+                    nearest = dist;
+                }
+            }
+            printf("[SFVS] bomb of %d explodes after %d frames, nearest enemy %.0f away\n", bomb->sourceId + 1, sBombAge,
+                   nearest);
+        }
+        sBombId = id;
+        sBombPhase = (id == PLAYERSHOT_BOMB) ? phase : -1;
+    }
+
     if ((gGameFrameCount % 150) != 0) {
         return;
     }
-    printf("[SFVS] frame %d time %d (other pilots' personal sounds left out: %d):", gGameFrameCount, sTimeLeft / 30,
-           sSfxMuted);
+    printf("[SFVS] frame %d time %d (other pilots' personal sounds left out: %d, team marks drawn: %d, hit sounds: %d):",
+           gGameFrameCount, sTimeLeft / 30, sSfxMuted, sMarksDrawn, sHitSfx);
     for (i = 0; i < gCamCount; i++) {
-        printf(" %s(sh%d k%d d%d s%d h%d c%d H%d)", SFModVs_PilotName(i), gPlayer[i].shields, sKills[i], sDeaths[i],
-               sShots[i], sHits[i], sCharged[i], sBigHits[i]);
+        printf(" %s(sh%d k%d d%d s%d h%d c%d H%d b%d l%d)", SFModVs_PilotName(i), gPlayer[i].shields, sKills[i],
+               sDeaths[i], sShots[i], sHits[i], sCharged[i], sBigHits[i], gBombCount[i], gLaserStrength[i]);
     }
     printf("\n");
     fflush(stdout);
@@ -1489,10 +1748,39 @@ void SFModVs_Update(void) {
         case SFVS_STATE_BGM:
             SFModVs_SetStageBgColor();
             if (++sTimer >= 20) {
+                // every match: the stage's VS music, or the music of Fortuna, Katina or Sector Z
+                static const u16 sMatchBgms[] = { NA_BGM_STAGE_FO, NA_BGM_STAGE_KA, NA_BGM_STAGE_SZ };
+                s32 pick = (s32) (Rand_ZeroOne() * (ARRAY_COUNT(sMatchBgms) + 1));
+                const char* v = getenv("SFMOD_TEST_VS_BGM"); // testing: 0..2 one of those, 3 the stage's
+
                 if (sStageBgm < 0) {
                     sStageBgm = gBgmSeqId;
                 }
-                gBgmSeqId = sStageBgm;
+                gBgmSeqId = ((pick >= 0) && (pick < ARRAY_COUNT(sMatchBgms))) ? sMatchBgms[pick] : sStageBgm;
+                if (v != NULL) {
+                    gBgmSeqId = (atoi(v) < ARRAY_COUNT(sMatchBgms)) ? sMatchBgms[atoi(v)] : sStageBgm;
+                }
+                if (sDebug) {
+                    printf("[SFVS] match music 0x%X (stage music 0x%X)\n", gBgmSeqId, sStageBgm);
+                    if (getenv("SFMOD_DEBUG_SCENERY") != NULL) {
+                        for (i = 0; i < 200; i++) {
+                            Scenery360* scn = &gScenery360[i];
+
+                            if (scn->obj.status == OBJ_ACTIVE) {
+                                printf("[SFVS] scenery %d id %d pos %.0f %.0f %.0f rotY %.0f hitbox %s", i, scn->obj.id,
+                                       scn->obj.pos.x, scn->obj.pos.y, scn->obj.pos.z, scn->obj.rot.y,
+                                       (scn->info.hitbox == NULL) ? "null" : "");
+                                if ((scn->info.hitbox != NULL) && ((s32) scn->info.hitbox[0] > 0)) {
+                                    printf("n%d z%.0f/%.0f y%.0f/%.0f x%.0f/%.0f", (s32) scn->info.hitbox[0],
+                                           scn->info.hitbox[1], scn->info.hitbox[2], scn->info.hitbox[3],
+                                           scn->info.hitbox[4], scn->info.hitbox[5], scn->info.hitbox[6]);
+                                }
+                                printf("\n");
+                            }
+                        }
+                    }
+                    fflush(stdout);
+                }
                 sHurryBgmPlaying = false;
                 AUDIO_PLAY_BGM(gBgmSeqId);
                 sTimer = 0;
@@ -1537,6 +1825,22 @@ void SFModVs_Update(void) {
                     }
                     if (sTimeLeft == 0) {
                         AUDIO_PLAY_SFX(NA_SE_TIME_OVER, gDefaultSfxSource, 4);
+                    }
+                }
+            }
+            if (SFModVs_TestFlag("SFMOD_TEST_VS_ALLY_AHEAD")) {
+                // testing the team marks: the first teammate of the watched pilot flies right in front of it
+                s32 v = SFModVs_ViewedPlayer();
+
+                for (i = 0; i < gCamCount; i++) {
+                    if ((i != v) && SFModVs_SameTeam(i, v)) {
+                        f32 yaw = (gPlayer[v].yRot_114 + gPlayer[v].rot.y) * M_DTOR;
+
+                        gPlayer[i].pos.x = gPlayer[v].pos.x - sinf(yaw) * 1500.0f + cosf(yaw) * 350.0f;
+                        gPlayer[i].pos.y = gPlayer[v].pos.y - 40.0f;
+                        gPlayer[i].pos.z = gPlayer[v].pos.z - cosf(yaw) * 1500.0f - sinf(yaw) * 350.0f;
+                        gPlayer[i].trueZpos = gPlayer[i].pos.z;
+                        break;
                     }
                 }
             }
@@ -1715,40 +2019,67 @@ static void SFModVs_DrawRadar(void) {
         }
     }
 
-    for (i = 0; i < gCamCount; i++) {
-        Player* pl = &gPlayer[i];
-        f32 px;
-        f32 pz;
-        s32 sx;
-        s32 sy;
-        s32 half;
-        u8 r, g, b;
+    // The pilots: arrows that point where they fly, like the marks on the story radar. They are drawn
+    // in eye space (like HUD_RadarMarks_Update) at the screen position of the map.
+    {
+        static u8 sRadarTags[MAX_PLAYERS];
+        const f32 depth = 1000.0f;
+        f32 k = depth * tanf(gFovY * 0.5f * M_DTOR) / (SCREEN_HEIGHT / 2.0f); // units per screen pixel
+        s32 n;
 
-        if (!SFModVs_Alive(i) && (pl->state != PLAYERSTATE_DOWN)) {
-            continue;
+        for (n = 0; n < gCamCount; n++) {
+            // the watched pilot last, on top of the others
+            s32 i = (n < sViewed) ? n : ((n + 1 < gCamCount) ? n + 1 : sViewed);
+            Player* pl = &gPlayer[i];
+            f32 px;
+            f32 pz;
+            f32 sx;
+            f32 sy;
+            f32 pixels;
+            u8 r, g, b;
+            u8 a = 255;
+
+            if (!SFModVs_Alive(i) && (pl->state != PLAYERSTATE_DOWN)) {
+                continue;
+            }
+            px = pl->pos.x;
+            pz = pl->trueZpos;
+            while (px > 12000.0f) {
+                px -= 24000.0f;
+            }
+            while (px < -12000.0f) {
+                px += 24000.0f;
+            }
+            while (pz > 12000.0f) {
+                pz -= 24000.0f;
+            }
+            while (pz < -12000.0f) {
+                pz += 24000.0f;
+            }
+            sx = x0 + (px + 12000.0f) / 24000.0f * size;
+            sy = y0 + (pz + 12000.0f) / 24000.0f * size;
+            pixels = (i == sViewed) ? 9.0f : 7.0f;
+            if ((i == sViewed) && (gGameFrameCount & 2)) {
+                a = 128; // the story radar's own mark blinks like this
+            }
+            if (pl->state == PLAYERSTATE_DOWN) {
+                a = 96;
+            }
+            SFModVs_GetPlayerColor(i, &r, &g, &b);
+
+            FrameInterpolation_RecordOpenChild(&sRadarTags[i], i);
+            Matrix_Push(&gGfxMatrix);
+            Matrix_Translate(gGfxMatrix, (sx - SCREEN_WIDTH / 2.0f) * k, (SCREEN_HEIGHT / 2.0f - sy) * k, -depth,
+                             MTXF_APPLY);
+            Matrix_RotateZ(gGfxMatrix, (pl->yRot_114 + pl->rot.y) * M_DTOR, MTXF_APPLY);
+            Matrix_Scale(gGfxMatrix, pixels * k / 44.0f, pixels * k / 44.0f, 1.0f, MTXF_APPLY); // the mark is 44 high
+            Matrix_SetGfxMtx(&gMasterDisp);
+            RCP_SetupDL(&gMasterDisp, SETUPDL_62);
+            gDPSetPrimColor(gMasterDisp++, 0, 0, r, g, b, a);
+            gSPDisplayList(gMasterDisp++, aRadarMarkArwingDL);
+            Matrix_Pop(&gGfxMatrix);
+            FrameInterpolation_RecordCloseChild();
         }
-        px = pl->pos.x;
-        pz = pl->trueZpos;
-        while (px > 12000.0f) {
-            px -= 24000.0f;
-        }
-        while (px < -12000.0f) {
-            px += 24000.0f;
-        }
-        while (pz > 12000.0f) {
-            pz -= 24000.0f;
-        }
-        while (pz < -12000.0f) {
-            pz += 24000.0f;
-        }
-        sx = x0 + (s32) ((px + 12000.0f) / 24000.0f * size);
-        sy = y0 + (s32) ((pz + 12000.0f) / 24000.0f * size);
-        half = (i == sViewed) ? 2 : 1;
-        if ((i == sViewed) && (gGameFrameCount & 4)) {
-            half = 1;
-        }
-        SFModVs_GetPlayerColor(i, &r, &g, &b);
-        Graphics_FillRectangle(&gMasterDisp, sx - half, sy - half, sx + half, sy + half, r, g, b, 255);
     }
 }
 
@@ -2433,6 +2764,27 @@ void SFModVs_MenuDraw(void) {
  *   SFMOD_TEST_VS_TARGET=<n> SFMOD_TEST_VS_TEAMS=1 SFMOD_TEST_VS_STAGE=<0-2> SFMOD_TEST_VS_LEVEL=<1-7>
  * ------------------------------------------------------------------------------------------------ */
 
+static bool sTestBootPending = false;
+
+int32_t SFModVs_TestItemSpawn(void) {
+    static s32 sSpawn = -2;
+
+    if (sSpawn == -2) {
+        const char* v = getenv("SFMOD_TEST_VS_ITEMSPAWN");
+
+        sSpawn = (v != NULL) ? CLAMP(atoi(v), 0, 4) : -1;
+    }
+    return sSpawn;
+}
+
+// The boot code resets the VS stage and rules after the test boot: set them up again.
+void SFModVs_AfterBootInit(void) {
+    if (sTestBootPending) {
+        sTestBootPending = false;
+        SFModVs_PrepareMatch();
+    }
+}
+
 bool SFModVs_TestBoot(void) {
     const char* pilots = getenv("SFMOD_TEST_VS");
     const char* v;
@@ -2473,6 +2825,7 @@ bool SFModVs_TestBoot(void) {
         }
     }
     SFModVs_PrepareMatch();
+    sTestBootPending = true;
     gNextGameState = GSTATE_VS_INIT;
     gOptionMenuStatus = OPTION_WAIT;
     printf("[SFMod] test boot into a VS CPU match with %d pilots\n", gSFVs.numPilots);
