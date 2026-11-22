@@ -548,6 +548,18 @@ void SFModGame_Update(void) {
                gTeamShields[TEAM_ID_SLIPPY], gTeamShields[TEAM_ID_PEPPY], gStarWolfTeamAlive[0],
                gStarWolfTeamAlive[1], gStarWolfTeamAlive[2], gStarWolfTeamAlive[3], gActors[4].health,
                gActors[5].health, gActors[6].health, gActors[7].health);
+        // the dogfighters: status, state, target, position, distance to Fox
+        for (i = 1; i <= 7; i++) {
+            Actor* a = &gActors[i];
+
+            printf("[SFGame]   actor %d: status %d id %d aiType %d state %d aiIndex %d pos %.0f %.0f %.0f dist %.0f "
+                   "draw %d\n",
+                   i, a->obj.status, a->obj.id, a->aiType, a->state, a->aiIndex, a->obj.pos.x, a->obj.pos.y,
+                   a->obj.pos.z,
+                   sqrtf(SQ(a->obj.pos.x - gPlayer[0].pos.x) + SQ(a->obj.pos.y - gPlayer[0].pos.y) +
+                         SQ(a->obj.pos.z - gPlayer[0].trueZpos)),
+                   a->info.drawType);
+        }
         fflush(stdout);
     }
     if (sStoryAIDebug) {
@@ -947,19 +959,24 @@ bool SFModGame_StoryAI(void* actorPtr, bool fighting, int32_t* fire, int32_t* mo
 
     if (sStoryAIDebug) {
         static s32 sShots;
+        static s32 sNearShots; // fired within 6000 of Fox (a fight he can see)
         static s32 sMoves[5];
         static s32 sFrames;
         static s32 sLastFrame;
 
         sShots += *fire;
+        if (*fire && (sqrtf(SQ(a->obj.pos.x - gPlayer[0].pos.x) + SQ(a->obj.pos.z - gPlayer[0].trueZpos)) < 6000.0f)) {
+            sNearShots++;
+        }
         sMoves[CLAMP(*move, 0, 4)]++;
         if (gGameFrameCount != sLastFrame) {
             sLastFrame = gGameFrameCount;
             if (++sFrames >= 300) {
-                printf("[SFGame] story AI (level %d): %d shots, moves loop %d uturn %d break %d roll %d, Fox shields %d\n",
-                       level, sShots, sMoves[1], sMoves[2], sMoves[3], sMoves[4], gPlayer[0].shields);
+                printf("[SFGame] story AI (level %d): %d shots (%d near Fox), moves loop %d uturn %d break %d roll %d, Fox "
+                       "shields %d\n",
+                       level, sShots, sNearShots, sMoves[1], sMoves[2], sMoves[3], sMoves[4], gPlayer[0].shields);
                 fflush(stdout);
-                sFrames = sShots = 0;
+                sFrames = sShots = sNearShots = 0;
                 memset(sMoves, 0, sizeof(sMoves));
             }
         }

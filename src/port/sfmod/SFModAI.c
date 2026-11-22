@@ -1783,6 +1783,68 @@ static f32 SFAI_ActorChaser(Actor* a, bool ally, const Vec3f* fwd, f32 awareness
     return best;
 }
 
+// the size of the arena (Player_CheckBounds360: Fox is turned around beyond it)
+static f32 SFAI_ArenaLimit(void) {
+    switch (gCurrentLevel) {
+        case LEVEL_CORNERIA:
+            return 8000.0f;
+        case LEVEL_BOLSE:
+            return 10000.0f;
+        case LEVEL_SECTOR_Z:
+            return 20000.0f;
+        default:
+            return 12500.0f;
+    }
+}
+
+// Stay with the fight around Fox and in the arena: farther than ~8000 from him the destination is pulled
+// towards him, the farther the more (lined up on its target a pilot keeps fighting); near the edge of
+// the arena it turns back for sure. Returns how much (0..1).
+static f32 SFAI_ActorTether(Actor* a, f32 targetAngle) {
+    static s32 sOff = -1; // testing: SFMOD_TEST_NO_RETURN switches this off
+    f32 limit = SFAI_ArenaLimit();
+    f32 scale = limit / 12500.0f;
+    bool foxFlies = (gPlayer[0].state == PLAYERSTATE_ACTIVE) || (gPlayer[0].state == PLAYERSTATE_U_TURN);
+    f32 cx = foxFlies ? gPlayer[0].pos.x : 0.0f;
+    f32 cz = foxFlies ? gPlayer[0].trueZpos : 0.0f;
+    f32 dist = sqrtf(SQ(cx - a->obj.pos.x) + SQ(cz - a->obj.pos.z));
+    f32 edge = SFAI_MAXF(fabsf(a->obj.pos.x), fabsf(a->obj.pos.z));
+    f32 edgeStart;
+    f32 w;
+
+    if (sOff < 0) {
+        sOff = getenv("SFMOD_TEST_NO_RETURN") != NULL;
+    }
+    if (sOff) {
+        return 0.0f;
+    }
+    w = 0.0f;
+    if ((gCurrentLevel == LEVEL_FORTUNA) || (gCurrentLevel == LEVEL_BOLSE) || (gCurrentLevel == LEVEL_VENOM_2)) {
+        // (the Star Wolf fights; Katina and Sector Z have their own places to defend)
+        w = SFAI_Clamp((dist - 8000.0f * scale) / (3500.0f * scale), 0.0f, 1.0f) * 0.6f;
+        if (targetAngle < 25.0f) {
+            w *= 0.15f; // the target is right in front: shoot first
+        }
+    }
+    // (a pilot on Fox's tail follows him almost to the edge, where he turns around himself)
+    edgeStart = (a->aiIndex == AI360_FOX) ? 0.9f : 0.75f;
+    w = SFAI_MAXF(w, SFAI_Clamp((edge - limit * edgeStart) / (limit * 0.17f), 0.0f, 1.0f));
+    if (w <= 0.0f) {
+        return 0.0f;
+    }
+    // towards Fox, but not out of the arena
+    cx = SFAI_Clamp(cx, -limit * 0.6f, limit * 0.6f);
+    cz = SFAI_Clamp(cz, -limit * 0.6f, limit * 0.6f);
+    a->fwork[4] += (cx - a->fwork[4]) * w;
+    a->fwork[5] += ((foxFlies ? SFAI_MAXF(gPlayer[0].pos.y, gGroundHeight + 300.0f) : a->obj.pos.y) - a->fwork[5]) * w;
+    a->fwork[6] += (cz - a->fwork[6]) * w;
+    if (w >= 1.0f) {
+        a->fwork[1] = SFAI_MAXF(a->fwork[1], 50.0f);
+        a->fwork[3] = SFAI_MAXF(a->fwork[3], 2.5f); // turn back quickly
+    }
+    return w;
+}
+
 void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool evade, bool mayFire, bool ally,
                      SFAIActorOrder* order) {
     Actor* a = (Actor*) actorPtr;
@@ -1800,6 +1862,7 @@ void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool ev
     f32 t;
     f32 angle;
     f32 allowed;
+    f32 tether;
 
     order->fire = false;
     order->move = SFAI_MOVE_NONE;
@@ -1845,6 +1908,7 @@ void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool ev
     if (st->evadeCooldown > 0) {
         st->evadeCooldown--;
     }
+
     if (st->think-- <= 0) {
         st->think = sReactionFrames[sk];
         st->noiseYaw = (SFAI_ActorRandF(st) - 0.5f) * 2.0f * sActorNoise[sk];
@@ -1885,6 +1949,11 @@ void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool ev
     SFAI_ActorForward(a, &fwd);
     angle = SFAI_AngleTo(&fwd, &aim);
 
+    // Stay with the fight around Fox. Two pilots that chase each other fly wide circles (they turn at
+    // the same rate) that slowly drift away, out of sight and off the radar. (The original never let two
+    // pilots chase each other: one of them always roamed around the middle of the arena.)
+    tether = SFAI_ActorTether(a, angle);
+
     // speed: close in on a target far ahead
     if ((sk >= 3) && (dist > 2200.0f) && (angle < 50.0f)) {
         a->fwork[1] = SFAI_MAXF(a->fwork[1], 50.0f + 12.0f * p->boost);
@@ -1898,7 +1967,7 @@ void SFAI_ActorThink(void* actorPtr, int32_t level, int32_t personality, bool ev
     }
 
     // evade: lasers coming in, or somebody of the other side behind and aiming (Fox, the team, Star Wolf ...)
-    if (evade && (st->evadeCooldown == 0) && (gPlayer[0].state == PLAYERSTATE_ACTIVE)) {
+    if (evade && (st->evadeCooldown == 0) && (gPlayer[0].state == PLAYERSTATE_ACTIVE) && (tether < 0.5f)) {
         bool incoming = (sk >= 2) && SFAI_ActorIncomingFire(a, ally);
         f32 foxDist = SFAI_ActorChaser(a, ally, &fwd, sAwareness[sk]); // (the pursuer, Fox or not)
         bool chased = foxDist > 0.0f;
